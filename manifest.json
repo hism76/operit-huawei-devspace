@@ -1,6 +1,3 @@
-//
-// ToolPkg manifest for com.operit.huawei_devspace_bundle
-// (leading comment avoids strict-JSON parsers; Operit also accepts HJSON)
 {
   "schema_version": 1,
   "toolpkg_id": "com.operit.huawei_devspace_bundle",
