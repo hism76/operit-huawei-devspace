@@ -1,1 +1,24 @@
-JSON_PLACEHOLDER_MANIFEST_V9
+//
+// ToolPkg manifest for com.operit.huawei_devspace_bundle
+// (leading comment avoids strict-JSON parsers; Operit also accepts HJSON)
+{
+  "schema_version": 1,
+  "toolpkg_id": "com.operit.huawei_devspace_bundle",
+  "version": "0.1.0",
+  "main": "dist/main.js",
+  "display_name": {
+    "zh": "华为云开发空间工具包",
+    "en": "Huawei DevSpace Bundle"
+  },
+  "description": {
+    "zh": "华为云开发环境管理：开/关连接按钮（隧道+SSH）、环境列表、状态查询与远程命令执行，基于 hdspace CLI。",
+    "en": "Huawei Cloud dev environment management: connect/disconnect buttons (tunnel+SSH), env list, status and remote exec via hdspace CLI."
+  },
+  "enabled_by_default": true,
+  "subpackages": [
+    {
+      "id": "huawei_devspace",
+      "entry": "dist/packages/huawei_devspace.js"
+    }
+  ]
+}
