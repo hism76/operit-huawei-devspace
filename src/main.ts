@@ -1,4 +1,19 @@
-// src/main.ts 与 src/packages/huawei_devspace.ts 内容一致：
-// - 作为 src/main.ts 时供 tsc 编译出子包逻辑副本
-// 完整实现见 ./packages/huawei_devspace.ts
-export * from "./packages/huawei_devspace.js";
+import toolboxUI from "./huawei_devspace_setup/index.ui.js";
+
+export function registerToolPkg() {
+    ToolPkg.registerToolboxUiModule({
+        id: "huawei_devspace_setup",
+        runtime: "compose_dsl",
+        screen: toolboxUI,
+        params: {},
+        title: {
+            zh: "华为云开发空间管理",
+            en: "Huawei DevSpace Manager"
+        }
+    });
+    return true;
+}
+
+export function onApplicationCreate() {
+    return { ok: true };
+}
