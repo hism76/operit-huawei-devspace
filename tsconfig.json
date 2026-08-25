@@ -1,21 +1,19 @@
-// TypeScript config for huawei_devspace sandbox package
-// typeRoots points to sibling Operit types directory
 {
   "compilerOptions": {
     "target": "es2020",
     "module": "commonjs",
     "outDir": "./dist",
+    "rootDir": "./src",
     "lib": ["es2020"],
     "declaration": false,
     "strict": false,
     "noImplicitAny": false,
     "strictNullChecks": true,
     "noImplicitThis": true,
-    "alwaysStrict": false,
     "noUnusedLocals": false,
     "noUnusedParameters": false,
     "noImplicitReturns": true,
-    "moduleResolution": "node",
+    "moduleResolution": "bundler",
     "allowSyntheticDefaultImports": true,
     "esModuleInterop": true,
     "experimentalDecorators": true,
