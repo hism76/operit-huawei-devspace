@@ -1,91 +1,95 @@
 # operit-huawei-devspace
 
-English | [简体中文](README.zh-CN.md)
+[English](README.md) | [简体中文](README.zh-CN.md)
 
-Operit sandbox package: Huawei Cloud DevSpace (dev environment) management via hdspace CLI.
+Operit sandbox package for managing Huawei Cloud CodeArts DevSpace (dev environments) via the `hdspace` CLI:
 
-- **Connect / Disconnect** (auto env start -> SSH port-forward tunnel -> SSH verify)
-- Env list & status
-- Remote command execution (SSH as root)
-- Interactive remote shell inside Operit terminal
-- Self-service AK/SK credential config (stored in system keyring, auto-verified)
+- **Connect / disconnect** (auto-start env → SSH port-forward tunnel → verify SSH)
+- **Power on / off** any environment without opening a tunnel
+- Environment list & status query
+- Remote command execution over SSH (auto user probing, auto root enablement)
+- Interactive remote shell inside the Operit terminal
+- Self-service AK/SK credential setup (stored in the system keyring and verified)
 
-Two artifacts:
+Two flavors are provided:
 
 | Artifact | Description |
 |---|---|
-| `huawei_devspace.toolpkg` | ToolPkg bundle with toolbox UI (connect/disconnect buttons + AK/SK panel). **Recommended.** |
+| `huawei_devspace.toolpkg` | ToolPkg with toolbox UI (recommended) |
 | `huawei_devspace.js` | Plain sandbox package (tools only, no UI) |
 
-## Requirements
+## Prerequisites
 
-1. A Huawei Cloud dev environment (CodeArts DevSpace)
-2. Access Key from [IAM console](https://console.huaweicloud.com/iam/?#/mine/accessKey)
-3. Operit with the `super_admin` package (proot Linux terminal), plus Linux packages: `dbus`, `gnome-keyring`, `python3`, `openssh-client`
-   (`apt install -y dbus gnome-keyring python3 openssh-client`)
+1. **Huawei Cloud dev environment**: create one in the [CodeArts DevSpace console](https://console.huaweicloud.com/devcloud/)
+2. **Access keys**: get AK/SK from the [IAM access key page](https://console.huaweicloud.com/iam/?#/mine/accessKey)
+3. **Operit** with:
+   - `super_admin` package enabled (proot Linux environment used to run the `hdspace` CLI)
+   - Linux-side packages: `dbus`, `gnome-keyring`, `python3`, `openssh-client`
+     (install as needed: `apt install -y dbus gnome-keyring python3 openssh-client`)
 
-## First-time setup
+## One-time setup
 
-### 1. Place hdspace CLI
+### 1. Place the hdspace CLI
 
-Download `hdspace` (ARM64 Linux static binary) from official Huawei Cloud channel and put it at:
+Download `hdspace` (ARM64 Linux static binary) from official Huawei Cloud channels and put it at:
 
 ```
 /storage/emulated/0/Download/hdspace
 ```
 
-The package copies it to `/root/.local/bin/hdspace` and chmods automatically.
+The package tools copy it to `/root/.local/bin/hdspace` and chmod it automatically.
 
-### 2. Initialize keyring environment (one-time)
+### 2. Initialize the keyring environment (optional sanity check)
 
-Run once in Operit Linux terminal (package tools also self-heal this automatically):
+Run once in the Operit Linux terminal (the package tools do this automatically on every call):
 
 ```bash
 bash /sdcard/Download/Operit/dev_package/huawei_devspace/assets/hds-env-setup.sh
-# expect KEYRING_OK
+# KEYRING_OK means ready
 ```
 
-> hdspace stores AK/SK in D-Bus Secret Service (gnome-keyring).
-> proot lacks this by default; this package starts dbus-daemon + gnome-keyring-daemon on a fixed address `/tmp/hds-dbus.sock` and provisions a passwordless login keyring.
+> `hdspace` stores AK/SK in the D-Bus Secret Service (gnome-keyring).
+> proot has no such services by default; this package starts `dbus-daemon` + `gnome-keyring-daemon`
+> on a fixed socket `/tmp/hds-dbus.sock` with a passwordless login keyring, and self-heals it before every tool call.
 
-### 3. Configure credentials
+### 3. Install the package
 
-Any of:
-
-- **Chat**: just tell the AI "change my Huawei AK/SK to xxx / yyy"
-- **Toolbox UI**: Operit toolbox -> "华为云开发空间管理" -> expand the AK/SK card, fill and save
-- **Terminal**:
-  ```bash
-  bash /root/.local/bin/hds-env-setup.sh && \
-  python3 /root/.local/bin/hds-config.py 'YOUR_AK' 'YOUR_SK'
-  # CONFIG_SUCCESS means done
-  ```
-
-### 4. Install the package
-
-Put `huawei_devspace.toolpkg` into Operit external packages directory and refresh.
+Put `huawei_devspace.toolpkg` into Operit's external packages directory and refresh,
+or use the debug-install tool inside Operit.
 
 ## Usage
 
-### Chat tools
+### Via chat commands
 
 | Example instruction | Tool |
 |---|---|
-| connect to my dev env | `huawei_dev_connect` |
-| disconnect | `huawei_dev_disconnect` |
-| list environments | `huawei_dev_list` |
-| connection status | `huawei_dev_status` |
-| run df -h on the cloud env | `huawei_dev_exec` |
-| change AK/SK to xxx/yyy | `huawei_dev_config` |
-| open cloud shell | `huawei_dev_shell` |
+| "连接华为云开发环境" | `huawei_dev_connect` |
+| "断开华为云连接" | `huawei_dev_disconnect` |
+| "列出我的开发环境" | `huawei_dev_list` |
+| "看看当前连接状态" | `huawei_dev_status` |
+| "把 2 号环境开机" | `huawei_dev_power` (`action=start`, `num=2`) |
+| "关掉当前环境" | `huawei_dev_power` (`action=stop`) |
+| "在云环境里执行 df -h" | `huawei_dev_exec` |
+| "打开云环境的终端" | `huawei_dev_shell` |
+| "给环境启用 root SSH" | `huawei_dev_enable_root` |
+| "帮我把 AK/SK 换成 xxx/yyy" | `huawei_dev_config` |
 
 ### Toolbox UI
 
-Operit toolbox -> "华为云开发空间管理":
+Operit Toolbox → 「华为云开发空间管理」:
 
-- Big buttons: **Connect / Disconnect**
-- Helpers: refresh status / env list / remote test
-- Collapsible card: **AK/SK credential config** (SK masked, save-and-verify)
+- Primary button: **连接** (+ 断开, enabled only while connected)
+- Power row: **开机 / 关机 / 刷新**
+- Env list card: state dot per env, tap to select target
+- Utility row: **远程测试 / 启用 root**
+
+### Manual credential rotation (terminal)
+
+```bash
+bash /root/.local/bin/hds-env-setup.sh && \
+python3 /root/.local/bin/hds-config.py 'YOUR_AK' 'YOUR_SK'
+# CONFIG_SUCCESS means done
+```
 
 ## Security & privacy notes
 
@@ -101,8 +105,8 @@ Layout:
 
 ```text
 src/
-├── main.ts / packages/huawei_devspace.ts   # subpackage core (METADATA + tools)
-├── main_toolpkg.ts                          # ToolPkg registration entry (toolbox UI)
+├── main.ts                                  # ToolPkg entry: registers the toolbox UI module
+├── packages/huawei_devspace.ts              # subpackage core (METADATA + tool implementations)
 └── huawei_devspace_setup/index.ui.ts        # Compose DSL toolbox UI
 assets/
 ├── hds-config.py                            # AK/SK pty auto-answer helper
@@ -118,9 +122,9 @@ tsc
 # pack .toolpkg (-X -D: no directory entries)
 mkdir -p pkgroot/dist pkgroot/src
 cp manifest.json tsconfig.json pkgroot/
-cp dist/main_toolpkg.js pkgroot/dist/main.js
+cp dist/main.js pkgroot/dist/main.js
 cp -r dist/huawei_devspace_setup dist/packages pkgroot/dist/
-cp src/main_toolpkg.ts pkgroot/src/main.ts
+cp src/main.ts pkgroot/src/main.ts
 cp -r src/huawei_devspace_setup src/packages pkgroot/src/
 cd pkgroot && zip -rqX -D ../huawei_devspace.toolpkg .
 ```

@@ -5,8 +5,9 @@
 Operit 沙盒包：华为云 CodeArts 开发空间（DevSpace）管理工具，基于 `hdspace` CLI 实现。
 
 - **开/关连接**：自动启动环境 → 建立 SSH 端口转发隧道 → 验证 SSH 可达，一条命令完成
+- **开/关机**：不建隧道直接对任意环境开机或关机
 - 环境列表与状态查询
-- 远程命令执行（SSH，root 身份）
+- 远程命令执行（SSH，自动探测登录用户，root 被拒时自动启用 root SSH）
 - 在 Operit 终端内打开交互式远程 Shell
 - AK/SK 凭据自助配置（写入系统密钥环并自动验证）
 
@@ -78,17 +79,21 @@ bash /sdcard/Download/Operit/dev_package/huawei_devspace/assets/hds-env-setup.sh
 | “断开华为云连接” | `huawei_dev_disconnect` |
 | “列出我的开发环境” | `huawei_dev_list` |
 | “看看当前连接状态” | `huawei_dev_status` |
+| “把 2 号环境开机” | `huawei_dev_power`（`action=start`, `num=2`） |
+| “关掉当前环境” | `huawei_dev_power`（`action=stop`） |
 | “在云环境里执行 df -h” | `huawei_dev_exec` |
 | “帮我把 AK/SK 换成 xxx/yyy” | `huawei_dev_config` |
 | “打开云环境的终端” | `huawei_dev_shell` |
+| “给环境启用 root SSH” | `huawei_dev_enable_root` |
 
 ### 工具箱 UI
 
 Operit 工具箱 → 「华为云开发空间管理」：
 
-- 大按钮：**开连接 / 关连接**
-- 辅助操作：刷新状态、环境列表、远程测试
-- 可折叠卡片：**AK/SK 凭据配置**（SK 输入框密码遮盖，保存即自动验证）
+- 主按钮：**连接**（未选中环境时置灰）；**断开** 仅在已连接时可点
+- 电源行：**开机 / 关机 / 刷新**
+- 环境列表卡片：每个环境带状态指示灯，点选目标
+- 工具行：**远程测试 / 启用 root**
 
 ## 安全与隐私说明
 
@@ -104,8 +109,8 @@ Operit 工具箱 → 「华为云开发空间管理」：
 
 ```text
 src/
-├── main.ts / packages/huawei_devspace.ts   # 子包核心逻辑（METADATA + 工具实现）
-├── main_toolpkg.ts                          # ToolPkg 注册入口（工具箱 UI 模块）
+├── main.ts                                  # ToolPkg 注册入口（工具箱 UI 模块）
+├── packages/huawei_devspace.ts              # 子包核心逻辑（METADATA + 工具实现）
 └── huawei_devspace_setup/index.ui.ts        # Compose DSL 工具箱界面
 assets/
 ├── hds-config.py                            # AK/SK pty 自动应答辅助
@@ -121,9 +126,9 @@ tsc
 # 打包 .toolpkg（注意 -X -D：不含目录条目）
 mkdir -p pkgroot/dist pkgroot/src
 cp manifest.json tsconfig.json pkgroot/
-cp dist/main_toolpkg.js pkgroot/dist/main.js
+cp dist/main.js pkgroot/dist/main.js
 cp -r dist/huawei_devspace_setup dist/packages pkgroot/dist/
-cp src/main_toolpkg.ts pkgroot/src/main.ts
+cp src/main.ts pkgroot/src/main.ts
 cp -r src/huawei_devspace_setup src/packages pkgroot/src/
 cd pkgroot && zip -rqX -D ../huawei_devspace.toolpkg .
 ```
