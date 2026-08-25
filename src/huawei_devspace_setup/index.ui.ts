@@ -95,19 +95,22 @@ export default function Screen(ctx: ComposeDslContext): ComposeNode {
         }
     }
 
-    const runAction = async (title: string, action: () => Promise<unknown>): Promise<void> => {
-        if (busy) return;
-        setBusy(true);
-        setMessage(`${title}中...`);
-        try {
-            await action();
-            setMessage(`${title}完成`);
-        } catch (e) {
-            setMessage(`${title}失败`);
-            setLog(asText((e as Error).message));
-        } finally {
-            setBusy(false);
-        }
+    const runAction = (title: string, action: () => Promise<unknown>, opts?: { readOnly?: boolean }) => {
+        const readOnly = !!(opts && opts.readOnly);
+        return async (): Promise<void> => {
+            if (busy && !readOnly) return;
+            if (!readOnly) setBusy(true);
+            setMessage(`${title}中...`);
+            try {
+                await action();
+                setMessage(`${title}完成`);
+            } catch (e) {
+                setMessage(`${title}失败`);
+                setLog(asText((e as Error).message));
+            } finally {
+                if (!readOnly) setBusy(false);
+            }
+        };
     };
 
     const refreshStatus = async (): Promise<void> => {
@@ -149,27 +152,27 @@ export default function Screen(ctx: ComposeDslContext): ComposeNode {
         }
     };
 
-    const connectToSelected = () => runAction("连接", async () => {
+    const connectToSelected = runAction("连接", async () => {
         if (!selectedId) throw new Error("请先在列表中选择一个环境");
         await callPackageTool("huawei_dev_connect", { id: selectedId });
         await refreshStatus();
         ctx.showToast("连接已建立");
     });
 
-    const disconnectAction = () => runAction("断开", async () => {
+    const disconnectAction = runAction("断开", async () => {
         await callPackageTool("huawei_dev_disconnect", { stop_env: false });
         await refreshStatus();
         ctx.showToast("已断开，环境保持运行");
     });
 
-    const powerOnAction = () => runAction("开机", async () => {
+    const powerOnAction = runAction("开机", async () => {
         if (!selectedId) throw new Error("请先选择环境");
         await callPackageTool("huawei_dev_power", { action: "start", id: selectedId });
         await refreshAllSilent();
         ctx.showToast("已开机 (Running)");
     });
 
-    const shutdownAction = () => runAction("关机", async () => {
+    const shutdownAction = runAction("关机", async () => {
         if (!selectedId) throw new Error("请先选择环境");
         const result = parseRecord(await callPackageTool("huawei_dev_power", { action: "stop", id: selectedId }));
         const finalState = asText(result.finalState);
@@ -194,12 +197,16 @@ export default function Screen(ctx: ComposeDslContext): ComposeNode {
         } catch { /* ignore */ }
     };
 
-    const refreshAllAction = () => runAction("刷新", async () => {
+    const refreshAllAction = runAction("刷新", async () => {
         await loadEnvs();
         await refreshStatus();
-    });
+    }, { readOnly: true });
 
-    const execProbeAction = () => runAction("远程测试", async () => {
+    const statusOnlyAction = runAction("状态", async () => {
+        await refreshStatus();
+    }, { readOnly: true });
+
+    const execProbeAction = runAction("远程测试", async () => {
         const result = parseRecord(await callPackageTool("huawei_dev_exec", {
             command: "echo __UI_PROBE_OK__ && whoami"
         }));
@@ -213,7 +220,7 @@ export default function Screen(ctx: ComposeDslContext): ComposeNode {
         }
     });
 
-    const enableRootAction = () => runAction("启用root", async () => {
+    const enableRootAction = runAction("启用root", async () => {
         const result = parseRecord(await callPackageTool("huawei_dev_enable_root", {}));
         if (result.success) {
             await refreshStatus();
@@ -326,7 +333,10 @@ export default function Screen(ctx: ComposeDslContext): ComposeNode {
                     ctx.UI.Icon({ name: connected ? "cloud_done" : "cloud_off", tint: connected ? "#4CAF50" : "onSurfaceVariant", size: 24 }),
                     ctx.UI.Spacer({ width: 8 }),
                     ctx.UI.Column({ weight: 1, spacing: 0 }, [
-                        ctx.UI.Text({ text: "华为云开发空间", style: "titleMedium", fontWeight: "bold" }),
+                        ctx.UI.Row({ verticalAlignment: "center", spacing: 6 }, [
+                            ctx.UI.Text({ text: "华为云开发空间", style: "titleMedium", fontWeight: "bold" }),
+                            ctx.UI.Text({ text: "v0.2.1", style: "labelSmall", color: "onSurfaceVariant" })
+                        ]),
                         ctx.UI.Text(
                             {
                                 text: status
@@ -439,7 +449,7 @@ export default function Screen(ctx: ComposeDslContext): ComposeNode {
                 ctx.UI.FilledTonalButton(
                     {
                         weight: 1,
-                        enabled: !busy,
+                        enabled: true,
                         onClick: refreshAllAction,
                         shape: { cornerRadius: 12 }
                     },

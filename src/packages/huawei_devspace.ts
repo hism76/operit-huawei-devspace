@@ -17,8 +17,8 @@ METADATA
         {
             "name": "usage_advice",
             "description": {
-                "zh": "使用建议：\n- huawei_dev_connect 可传 num 或 id 连接任意容器/虚拟机；切换自动替换旧隧道。\n- Vm 登录用户是 developer，Container 是 root，自动探测。\n- root 被拒时自动尝试 enable_root 注入公钥。\n- 首次使用先 huawei_dev_config 配置 AK/SK。\n- 开发桌面类型暂不支持。",
-                "en": "- connect accepts num/id for any container/VM; switching replaces tunnel.\n- Vm uses developer, Container uses root; auto-probed.\n- Auto enable_root when root denied.\n- First-time: huawei_dev_config.\n- Desktop type not supported yet."
+                "zh": "使用建议：\n- huawei_dev_connect 可传 num 或 id 连接任意容器/虚拟机；切换自动替换旧隧道。\n- Vm 登录用户是 developer，Container 是 root，自动探测。\n- root 被拒时自动尝试 enable_root 注入公钥。\n- 首次使用先 huawei_dev_config 配置 AK/SK。\n- 开发桌面类型暂不支持。\n- 连接空闲掉线时可直接重试 exec（自动重建隧道），或调用 huawei_dev_keepalive 主动保活。",
+                "en": "- connect accepts num/id for any container/VM; switching replaces tunnel.\n- Vm uses developer, Container uses root; auto-probed.\n- Auto enable_root when root denied.\n- First-time: huawei_dev_config.\n- Desktop type not supported yet.\n- On idle disconnects: just retry exec (auto rebuilds tunnel), or call huawei_dev_keepalive."
             },
             "parameters": [],
             "advice": true
@@ -106,12 +106,21 @@ METADATA
                 {"name": "num", "description": {"zh": "NUM 序号，与 id 二选一", "en": "NUM column"}, "type": "number", "required": false}
             ],
             "returns": true
+        },
+        {
+            "name": "huawei_dev_keepalive",
+            "description": {
+                "zh": "保活/自愈：真实 SSH 通信探测（可发现端口通但数据不通的僵死隧道），失败自动重建；隧道进程消失时自动复活。建议配合定时任务每 3~5 分钟调用。",
+                "en": "Keepalive/self-heal: real SSH echo probe (detects half-open zombie tunnels), auto-rebuilds on failure; revives dead tunnel process. Recommended every 3-5 min via scheduled task."
+            },
+            "parameters": [],
+            "returns": true
         }
     ]
 }
 */
 Object.defineProperty(exports, "__esModule", { value: true });
-const PACKAGE_VERSION = "0.2.0";
+const PACKAGE_VERSION = "0.2.1";
 const CLI_PATH = "/root/.local/bin/hdspace";
 const CLI_SOURCE = "/storage/emulated/0/Download/hdspace";
 const TUNNEL_PORT = 10022;
@@ -136,9 +145,9 @@ function firstNonBlank(...values) {
     }
     return "";
 }
-async function runShell(command, timeoutMs) {
+async function runShell(command, timeoutMs, executorKey) {
     const result = await Tools.System.terminal.hiddenExec(command, {
-        executorKey: "huawei-devspace",
+        executorKey: executorKey || "huawei-devspace",
         timeoutMs
     });
     return {
@@ -164,7 +173,7 @@ async function ensureKeyring() {
 async function hds(args, timeoutMs) {
     await ensureCli();
     const combined = `DBUS_SESSION_BUS_ADDRESS=${DBUS_ADDRESS} bash ${ENV_SETUP_SCRIPT} >/dev/null 2>&1; DBUS_SESSION_BUS_ADDRESS=${DBUS_ADDRESS} ${CLI_PATH} ${args}`;
-    return await runShell(combined, timeoutMs);
+    return await runShell(combined, timeoutMs, "hds-cli");
 }
 /** 解析 devenv list 表格输出 */
 function parseEnvList(tableText) {
@@ -282,6 +291,7 @@ async function resolveTarget(params) {
 async function waitForState(env, wantStates, timeoutMs) {
     const deadline = Date.now() + timeoutMs;
     let lastState = "";
+    let sawTransition = false;
     while (Date.now() < deadline) {
         try {
             const envs = await listEnvs(30000);
@@ -290,7 +300,10 @@ async function waitForState(env, wantStates, timeoutMs) {
                 lastState = cur.state;
                 if (wantStates.indexOf(cur.state) >= 0)
                     return cur.state;
-                if (cur.state === "Ready" && wantStates.indexOf("Running") >= 0 && lastState !== "Starting")
+                // 记录过渡态（如 Starting/Stopping），只有见过目标态的前置态后才允许 Ready 提前退出
+                if (cur.state === "Starting" || cur.state === "Stopping")
+                    sawTransition = true;
+                if (cur.state === "Ready" && wantStates.indexOf("Running") >= 0 && sawTransition)
                     break;
             }
         }
@@ -344,12 +357,17 @@ function firstLine(text) {
     const idx = text.indexOf("\n");
     return (idx >= 0 ? text.slice(0, idx) : text).trim().slice(0, 160);
 }
+/** 隧道日志截断（防无限增长），每次启动隧道前调用 */
+async function trimTunnelLogs() {
+    await runShell(`for f in /tmp/hds-tunnel-*.log; do [ -f "$f" ] && [ "$(wc -c < "$f")" -gt 262144 ] && tail -c 65536 "$f" > "$f.tmp" && mv "$f.tmp" "$f"; done 2>/dev/null; true`, 8000, "log-maint");
+}
 /** 启动隧道并等待端口开放；失败自动重启重试（hdspace 偶发 success 后自退） */
 async function startTunnelWithRetry(envId) {
     const attempts = [];
+    await trimTunnelLogs();
     for (let attempt = 1; attempt <= TUNNEL_RESTART_RETRIES; attempt += 1) {
         await killTunnel();
-        const t = await runShell(buildTunnelCommand(envId), 15000);
+        const t = await runShell(buildTunnelCommand(envId), 15000, "tunnel-mgr");
         attempts.push(`launch#${attempt}: exit=${t.exitCode}`);
         const opened = await waitPortOpen(TUNNEL_PORT, 25000);
         attempts.push(`port#${attempt}: ${opened ? "OPEN" : "CLOSED"}`);
@@ -616,6 +634,85 @@ async function huaweiDevPower(params) {
     });
 }
 
+/**
+ * 真实 SSH 通信探测：能发现 TCP 半开的僵死隧道（端口开但数据不通）。
+ * 成功时记录 last_ok 时间戳，供 status/keepalive 判断隧道健康度。
+ */
+async function sshEchoProbe(envId, user, executorKey) {
+    const identityPath = `${IDENTITY_DIR}/${envId}`;
+    const knownHosts = `${KNOWN_HOSTS_DIR}/${envId}`;
+    if (!user) {
+        user = await getCurrentUser({ id: envId, num: "", name: "", state: "", type: "" });
+    }
+    if (!user)
+        return { ok: false, reason: "no known login user" };
+    const parts = [...sshBaseArgs(identityPath, knownHosts)];
+    parts.push(`${user}@127.0.0.1`);
+    parts.push("'echo __KEEPALIVE_OK__'");
+    const r = await runShell(parts.join(" "), 20000, executorKey || "probe");
+    const ok = r.output.indexOf("__KEEPALIVE_OK__") >= 0;
+    return { ok, reason: ok ? "" : firstLine(r.output).slice(0, 120), user };
+}
+async function markLastOk(envId) {
+    await writeState("hds-last-ok-ts", String(Date.now()));
+    void envId;
+}
+async function getLastOk() {
+    const v = await readState("hds-last-ok-ts");
+    return Number(v) > 0 ? Number(v) : 0;
+}
+/** keepalive 工具实现：真实探测 + 僵死自愈 */
+async function huaweiDevKeepalive(params) {
+    void params;
+    const steps = [];
+    const alive = await isTunnelAlive();
+    steps.push(`tunnel process: ${alive ? "ALIVE" : "DOWN"}`);
+    if (!alive) {
+        // 进程没了：若之前有 current-env，自动重建
+        const curId = await readState("hds-current-env");
+        if (!curId) {
+            steps.push("no previous env; nothing to revive");
+            return await persistToolResult("keepalive", { success: false, action: "none", steps });
+        }
+        steps.push(`reviving tunnel for ${curId.slice(0, 8)}...`);
+        const t = await startTunnelWithRetry(curId);
+        steps.push(...t.attempts);
+        if (t.ok) {
+            await markLastOk(curId);
+            return await persistToolResult("keepalive", { success: true, action: "revived", envId: curId, steps });
+        }
+        throw new Error(`tunnel revival failed: ${t.attempts.join(" | ").slice(-300)}`);
+    }
+    // 进程在：做真实通信探测
+    const tunnelTarget = await getTunnelTarget();
+    const targetId = tunnelTarget || (await readState("hds-current-env"));
+    if (!targetId) {
+        steps.push("tunnel alive but target unknown; treating as healthy");
+        return await persistToolResult("keepalive", { success: true, action: "none", steps });
+    }
+    const probe = await sshEchoProbe(targetId, "");
+    steps.push(probe.ok ? `ssh echo OK as ${probe.user}` : `ssh echo FAILED (${probe.reason})`);
+    if (probe.ok) {
+        await markLastOk(targetId);
+        return await persistToolResult("keepalive", { success: true, action: "verified", envId: targetId, user: probe.user, steps });
+    }
+    // 半开僵死 → 重建
+    steps.push("tunnel appears half-open zombie; rebuilding...");
+    const t = await startTunnelWithRetry(targetId);
+    steps.push(...t.attempts);
+    if (!t.ok)
+        throw new Error(`zombie rebuild failed: ${t.attempts.join(" | ").slice(-300)}`);
+    const reprobe = await sshEchoProbe(targetId, probe.user || "");
+    steps.push(reprobe.ok ? "re-verify OK after rebuild" : `still failing after rebuild (${reprobe.reason})`);
+    if (reprobe.ok)
+        await markLastOk(targetId);
+    return await persistToolResult("keepalive", {
+        success: reprobe.ok,
+        action: "rebuilt",
+        envId: targetId,
+        steps
+    });
+}
 async function huaweiDevDisconnect(params) {
     const stopEnv = params?.stop_env !== false;
     const steps = [];
@@ -715,6 +812,7 @@ async function huaweiDevStatus(params) {
         sshOk,
         user,
         envState, envName, envId, envType,
+        lastOkTs: await getLastOk(),
         steps
     });
 }
@@ -755,8 +853,22 @@ async function huaweiDevExec(params) {
         parts.push(`'${escaped}'`);
         return parts.join(" ");
     };
-    let r = await runShell(buildCmd(), Math.max(timeoutMs + 10000, 20000));
+    let r = await runShell(buildCmd(), Math.max(timeoutMs + 10000, 20000), "ssh-exec");
     let success = r.exitCode === 0 && !r.timedOut;
+    // 隧道自愈：半开/端口死 → 重建后重试一次（用户无感）
+    const tunnelDead = !success
+        && (r.output.indexOf("Connection refused") >= 0
+            || r.output.indexOf("Connection timed out") >= 0
+            || r.output.indexOf("kex_exchange_identification") >= 0);
+    if (tunnelDead) {
+        const t = await startTunnelWithRetry(env.id);
+        if (t.ok) {
+            r = await runShell(buildCmd(), Math.max(timeoutMs + 10000, 20000), "ssh-exec");
+            success = r.exitCode === 0 && !r.timedOut;
+            if (success)
+                await markLastOk(env.id);
+        }
+    }
     // 自愈：指纹变化 / 密钥失配
     if (!success) {
         if (r.output.indexOf("REMOTE HOST IDENTIFICATION HAS CHANGED") >= 0) {
@@ -971,7 +1083,8 @@ const huaweiDevspaceTools = {
     huawei_dev_config: huaweiDevConfig,
     huawei_dev_shell: huaweiDevShell,
     huawei_dev_enable_root: huaweiDevEnableRoot,
-    huawei_dev_power: huaweiDevPower
+    huawei_dev_power: huaweiDevPower,
+    huawei_dev_keepalive: huaweiDevKeepalive
 };
 export default huaweiDevspaceTools;
 exports.huawei_dev_connect = huaweiDevConnect;
@@ -983,3 +1096,4 @@ exports.huawei_dev_config = huaweiDevConfig;
 exports.huawei_dev_shell = huaweiDevShell;
 exports.huawei_dev_enable_root = huaweiDevEnableRoot;
 exports.huawei_dev_power = huaweiDevPower;
+exports.huawei_dev_keepalive = huaweiDevKeepalive;
