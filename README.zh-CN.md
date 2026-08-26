@@ -82,18 +82,30 @@ bash /sdcard/Download/Operit/dev_package/huawei_devspace/assets/hds-env-setup.sh
 | “把 2 号环境开机” | `huawei_dev_power`（`action=start`, `num=2`） |
 | “关掉当前环境” | `huawei_dev_power`（`action=stop`） |
 | “在云环境里执行 df -h” | `huawei_dev_exec` |
+| “上传 xxx 到云环境 /tmp/” | `huawei_dev_upload` |
+| “下载云环境的 ~/a.log” | `huawei_dev_download` |
+| “隧道又掉了？看看日志” | `huawei_dev_logs` |
+| "把远端 8080 转发到本地" | `huawei_dev_forward` |
 | “帮我把 AK/SK 换成 xxx/yyy” | `huawei_dev_config` |
 | “打开云环境的终端” | `huawei_dev_shell` |
 | “给环境启用 root SSH” | `huawei_dev_enable_root` |
+
+### 多环境并行
+
+每个环境分配独立本地端口（10022-10079 端口池），互不干扰：
+
+- 列表行内 🔗 图标一键连接/断开任意环境，可同时保持多条隧道
+- `huawei_dev_keepalive` 自动巡检**所有**已登记环境并自愈僵死隧道（建议配定时任务每 5 分钟）
+- `disconnect` 支持 id/num 精确断开单个环境；不传则断开全部
 
 ### 工具箱 UI
 
 Operit 工具箱 → 「华为云开发空间管理」：
 
-- 主按钮：**连接**（未选中环境时置灰）；**断开** 仅在已连接时可点
+- 操作行：**连接**（选中环境）/ **断开**（选中环境）/ **保活**（全部巡检）
 - 电源行：**开机 / 关机 / 刷新**
-- 环境列表卡片：每个环境带状态指示灯，点选目标
-- 工具行：**远程测试 / 启用 root**
+- 环境列表卡片：状态灯 + 行内 🔗 连接开关 + 标题栏 ⟳ 刷新与 🔗‍💨 全部断开
+- 已连接环境显示端口与登录用户；工具行：**测试 / root**
 
 ## 安全与隐私说明
 

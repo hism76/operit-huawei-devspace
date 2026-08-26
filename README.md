@@ -70,18 +70,30 @@ or use the debug-install tool inside Operit.
 | "把 2 号环境开机" | `huawei_dev_power` (`action=start`, `num=2`) |
 | "关掉当前环境" | `huawei_dev_power` (`action=stop`) |
 | "在云环境里执行 df -h" | `huawei_dev_exec` |
+| "上传 xxx 到云环境 /tmp/" | `huawei_dev_upload` |
+| "下载云环境的 ~/a.log" | `huawei_dev_download` |
+| "隧道又掉了？看看日志" | `huawei_dev_logs` |
+| "把远端 8080 转发到本地" | `huawei_dev_forward` |
+| "帮我把 AK/SK 换成 xxx/yyy" | `huawei_dev_config` |
 | "打开云环境的终端" | `huawei_dev_shell` |
 | "给环境启用 root SSH" | `huawei_dev_enable_root` |
-| "帮我把 AK/SK 换成 xxx/yyy" | `huawei_dev_config` |
+
+### Multi-env parallel tunnels
+
+Each environment gets its own local port from a pool (10022-10079), fully isolated:
+
+- Tap the inline 🔗 icon on any list row to connect/disconnect that env; keep multiple tunnels alive simultaneously
+- `huawei_dev_keepalive` patrols **all** registered envs and self-heals zombie tunnels (recommended: scheduled task every 5 min)
+- `disconnect` accepts id/num to tear down a single tunnel; omit to kill all
 
 ### Toolbox UI
 
 Operit Toolbox → 「华为云开发空间管理」:
 
-- Primary button: **连接** (+ 断开, enabled only while connected)
+- Action row: **连接** (selected env) / **断开** (selected env) / **保活** (patrol all)
 - Power row: **开机 / 关机 / 刷新**
-- Env list card: state dot per env, tap to select target
-- Utility row: **远程测试 / 启用 root**
+- Env list card: state dots + inline 🔗 toggle per row + header ⟳ refresh and 🔗‍💨 disconnect-all
+- Connected envs show port & login user; utility row: **测试 / root**
 
 ### Manual credential rotation (terminal)
 

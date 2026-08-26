@@ -11,6 +11,18 @@ type StatusInfo = {
     envName: string;
     envId: string;
     envType: string;
+    port: number;
+    connections: ConnInfo[];
+};
+
+type ConnInfo = {
+    envId: string;
+    envName: string;
+    port: number;
+    tunnelAlive: boolean;
+    portOpen: boolean;
+    sshOk: boolean;
+    user: string;
 };
 
 type EnvItem = {
@@ -105,8 +117,10 @@ export default function Screen(ctx: ComposeDslContext): ComposeNode {
                 await action();
                 setMessage(`${title}完成`);
             } catch (e) {
-                setMessage(`${title}失败`);
-                setLog(asText((e as Error).message));
+                const errText = asText((e as Error).message) || "未知错误";
+                const short = errText.length > 60 ? errText.slice(0, 60) + "…" : errText;
+                setMessage(`${title}失败 · ${short}`);
+                setLog(errText);
             } finally {
                 if (!readOnly) setBusy(false);
             }
@@ -115,6 +129,17 @@ export default function Screen(ctx: ComposeDslContext): ComposeNode {
 
     const refreshStatus = async (): Promise<void> => {
         const result = parseRecord(await callPackageTool("huawei_dev_status", {}));
+        const conns: ConnInfo[] = Array.isArray(result.connections)
+            ? (result.connections as any[]).map((c: any) => ({
+                envId: asText(c.envId),
+                envName: asText(c.envName),
+                port: Number(c.port) || 0,
+                tunnelAlive: !!c.tunnelAlive,
+                portOpen: !!c.portOpen,
+                sshOk: !!c.sshOk,
+                user: asText(c.user)
+            }))
+            : [];
         const info: StatusInfo = {
             connected: !!result.connected,
             tunnelAlive: !!result.tunnelAlive,
@@ -125,7 +150,9 @@ export default function Screen(ctx: ComposeDslContext): ComposeNode {
             envState: asText(result.envState),
             envName: asText(result.envName),
             envId: asText(result.envId),
-            envType: asText(result.envType)
+            envType: asText(result.envType),
+            port: Number(result.port) || 0,
+            connections: conns
         };
         setStatus(info);
     };
@@ -155,15 +182,46 @@ export default function Screen(ctx: ComposeDslContext): ComposeNode {
     const connectToSelected = runAction("连接", async () => {
         if (!selectedId) throw new Error("请先在列表中选择一个环境");
         await callPackageTool("huawei_dev_connect", { id: selectedId });
-        await refreshStatus();
+        await refreshAllSilent();
         ctx.showToast("连接已建立");
     });
 
-    const disconnectAction = runAction("断开", async () => {
-        await callPackageTool("huawei_dev_disconnect", { stop_env: false });
-        await refreshStatus();
+    const disconnectAction = runAction("断开当前", async () => {
+        await callPackageTool("huawei_dev_disconnect", { stop_env: false, id: selectedId || undefined });
+        await refreshAllSilent();
         ctx.showToast("已断开，环境保持运行");
     });
+
+    const disconnectAllAction = runAction("全部断开", async () => {
+        await callPackageTool("huawei_dev_disconnect", { stop_env: false });
+        await refreshAllSilent();
+        ctx.showToast("已断开所有隧道");
+    });
+
+    /** 按环境直连/断开（列表行内按钮用） */
+    const connectEnv = (envId: string) => runAction("连接", async () => {
+        await callPackageTool("huawei_dev_connect", { id: envId });
+        await refreshAllSilent();
+        ctx.showToast("连接已建立");
+    })();
+
+    const disconnectEnv = (envId: string) => runAction("断开", async () => {
+        await callPackageTool("huawei_dev_disconnect", { stop_env: false, id: envId });
+        await refreshAllSilent();
+        ctx.showToast("已断开该隧道");
+    })();
+
+    const keepaliveAllAction = runAction("全部保活", async () => {
+        const result = parseRecord(await callPackageTool("huawei_dev_keepalive", {}));
+        await refreshAllSilent();
+        const checked = Number(result.checked) || 0;
+        if (result.success) {
+            setLog(`✓ 保活完成 · 检查 ${checked} 个连接`);
+            ctx.showToast(`保活完成 (${checked})`);
+        } else {
+            throw new Error(`保活部分失败：${asText(result.steps && (result.steps as string[]).slice(-2).join(" | "))}`);
+        }
+    }, { readOnly: true });
 
     const powerOnAction = runAction("开机", async () => {
         if (!selectedId) throw new Error("请先选择环境");
@@ -235,13 +293,19 @@ export default function Screen(ctx: ComposeDslContext): ComposeNode {
     const hasSelection = !!selectedId;
 
     // ===== 环境条目构建 =====
+    const connMap: Record<string, ConnInfo> = {};
+    for (const c of (status?.connections || [])) {
+        connMap[c.envId] = c;
+    }
     const envItems: ComposeNode[] = [];
     if (envs.length > 0) {
         for (let i = 0; i < envs.length; i += 1) {
             const env = envs[i];
             const isSelected = selectedId === env.id;
-            const isCurrent = !!currentTargetId && env.id === currentTargetId;
             const isDesktop = env.type.toLowerCase() === "desktop";
+            const conn = connMap[env.id];
+            const isTunneled = !!(conn && conn.tunnelAlive);
+            const isSshOk = !!(conn && conn.sshOk);
             envItems.push(
                 ctx.UI.Surface(
                     {
@@ -279,17 +343,22 @@ export default function Screen(ctx: ComposeDslContext): ComposeNode {
                                             fontWeight: "bold",
                                             color: isSelected ? "#1565C0" : "onSurface"
                                         }),
-                                        ...(isCurrent ? [ctx.UI.Text({ text: "当前", style: "labelSmall", color: "#4CAF50", fontWeight: "bold" })] : []),
+                                        ...(isSshOk ? [ctx.UI.Text({ text: `已连接:${conn!.port}`, style: "labelSmall", color: "#4CAF50", fontWeight: "bold" })] : []),
+                                        ...(isTunneled && !isSshOk ? [ctx.UI.Text({ text: `隧道中:${conn!.port}`, style: "labelSmall", color: "#FF9800", fontWeight: "bold" })] : []),
                                         ...(isDesktop ? [ctx.UI.Text({ text: "暂不支持", style: "labelSmall", color: "#FF9800" })] : [])
                                     ]),
                                     ctx.UI.Text({
-                                        text: `${env.type} · ${stateLabel(env.state)}`,
+                                        text: `${env.type} · ${stateLabel(env.state)}${isSshOk && conn!.user ? ` · ${conn!.user}` : ""}`,
                                         style: "bodySmall",
                                         color: stateHex(env.state)
                                     })
                                 ]),
-                                // 右侧勾选
-                                ...(isSelected ? [ctx.UI.Icon({ name: "check_circle", tint: "#1565C0", size: 22 })] : [])
+                                // 行内连接/断开快捷按钮
+                                ...(!isDesktop ? [
+                                    isTunneled
+                                        ? ctx.UI.IconButton({ icon: "link_off", enabled: true, onClick: () => disconnectEnv(env.id) })
+                                        : ctx.UI.IconButton({ icon: "link", enabled: true, onClick: () => connectEnv(env.id) })
+                                ] : [])
                             ]
                         )
                     ]
@@ -327,31 +396,37 @@ export default function Screen(ctx: ComposeDslContext): ComposeNode {
         },
         [
             // ===== 顶部：标题 + 连接状态徽章 =====
-            ctx.UI.Row(
-                { fillMaxWidth: true, verticalAlignment: "center", padding: 2 },
-                [
-                    ctx.UI.Icon({ name: connected ? "cloud_done" : "cloud_off", tint: connected ? "#4CAF50" : "onSurfaceVariant", size: 24 }),
-                    ctx.UI.Spacer({ width: 8 }),
-                    ctx.UI.Column({ weight: 1, spacing: 0 }, [
-                        ctx.UI.Row({ verticalAlignment: "center", spacing: 6 }, [
-                            ctx.UI.Text({ text: "华为云开发空间", style: "titleMedium", fontWeight: "bold" }),
-                            ctx.UI.Text({ text: "v0.2.1", style: "labelSmall", color: "onSurfaceVariant" })
+            (() => {
+                const conns = status?.connections || [];
+                const activeCount = conns.filter(c => c.tunnelAlive).length;
+                const sshCount = conns.filter(c => c.sshOk).length;
+                const subtitle = !status
+                    ? "加载中..."
+                    : sshCount > 0
+                        ? `${sshCount} 个环境已连接 · ${activeCount} 条隧道活跃`
+                        : (status.envState === "Running" ? "环境运行中 · 未建立隧道" : (status.envState ? "未连接" : "加载中..."));
+                return ctx.UI.Row(
+                    { fillMaxWidth: true, verticalAlignment: "center", padding: 2 },
+                    [
+                        ctx.UI.Icon({ name: sshCount > 0 ? "cloud_done" : "cloud_off", tint: sshCount > 0 ? "#4CAF50" : "onSurfaceVariant", size: 24 }),
+                        ctx.UI.Spacer({ width: 8 }),
+                        ctx.UI.Column({ weight: 1, spacing: 0 }, [
+                            ctx.UI.Row({ verticalAlignment: "center", spacing: 6 }, [
+                                ctx.UI.Text({ text: "华为云开发空间", style: "titleMedium", fontWeight: "bold" }),
+                                ctx.UI.Text({ text: "v0.2.2", style: "labelSmall", color: "onSurfaceVariant" })
+                            ]),
+                            ctx.UI.Text(
+                                {
+                                    text: subtitle,
+                                    style: "labelMedium",
+                                    color: sshCount > 0 ? "#4CAF50" : "onSurfaceVariant"
+                                }
+                            )
                         ]),
-                        ctx.UI.Text(
-                            {
-                                text: status
-                                    ? (connected
-                                        ? `${status.envName || ""} · ${status.user || ""} 已连接`
-                                        : (status.envState === "Running" ? "环境运行中 · 未建立隧道" : (status.envState ? "未连接" : "加载中...")))
-                                    : "加载中...",
-                                style: "labelMedium",
-                                color: connected ? "#4CAF50" : "onSurfaceVariant"
-                            }
-                        )
-                    ]),
-                    ...(busy ? [ctx.UI.CircularProgressIndicator({ strokeWidth: 2.5, color: "#1565C0" })] : [])
-                ]
-            ),
+                        ...(busy ? [ctx.UI.CircularProgressIndicator({ strokeWidth: 2.5, color: "#1565C0" })] : [])
+                    ]
+                );
+            })(),
 
             // ===== 当前目标信息条 =====
             status ? ctx.UI.Surface(
@@ -383,39 +458,53 @@ export default function Screen(ctx: ComposeDslContext): ComposeNode {
             ) : ctx.UI.Spacer({}),
 
             // ===== 操作按钮区 =====
-            ctx.UI.Row({ spacing: 8, fillMaxWidth: true }, [
+            ctx.UI.Row({ spacing: 8, fillMaxWidth: true, verticalAlignment: "center" }, [
                 ctx.UI.Button(
                     {
-                        weight: 1.6,
+                        weight: 1,
                         enabled: !busy && hasSelection,
                         onClick: connectToSelected,
                         shape: { cornerRadius: 12 }
                     },
                     [
-                        ctx.UI.Row({ verticalAlignment: "center", spacing: 5 }, [
+                        ctx.UI.Row({ verticalAlignment: "center", horizontalArrangement: "center", spacing: 5 }, [
                             ctx.UI.Icon({ name: "link", size: 16 }),
-                            ctx.UI.Text({ text: busy ? "处理中…" : "连接", fontWeight: "bold" })
+                            ctx.UI.Text({ text: busy ? "处理中" : "连接", fontWeight: "bold" })
                         ])
                     ]
                 ),
                 ctx.UI.FilledTonalButton(
                     {
                         weight: 1,
-                        enabled: !busy && connected,
+                        enabled: !busy && hasSelection,
                         onClick: disconnectAction,
                         shape: { cornerRadius: 12 }
                     },
                     [
-                        ctx.UI.Row({ verticalAlignment: "center", spacing: 4 }, [
-                            ctx.UI.Icon({ name: "link_off", size: 15 }),
+                        ctx.UI.Row({ verticalAlignment: "center", horizontalArrangement: "center", spacing: 5 }, [
+                            ctx.UI.Icon({ name: "link_off", size: 16 }),
                             ctx.UI.Text({ text: "断开" })
+                        ])
+                    ]
+                ),
+                ctx.UI.FilledTonalButton(
+                    {
+                        weight: 1,
+                        enabled: true,
+                        onClick: keepaliveAllAction,
+                        shape: { cornerRadius: 12 }
+                    },
+                    [
+                        ctx.UI.Row({ verticalAlignment: "center", horizontalArrangement: "center", spacing: 5 }, [
+                            ctx.UI.Icon({ name: "autorenew", size: 16 }),
+                            ctx.UI.Text({ text: "保活" })
                         ])
                     ]
                 )
             ]),
 
             // ===== 电源操作行 =====
-            ctx.UI.Row({ spacing: 8, fillMaxWidth: true }, [
+            ctx.UI.Row({ spacing: 8, fillMaxWidth: true, verticalAlignment: "center" }, [
                 ctx.UI.FilledTonalButton(
                     {
                         weight: 1,
@@ -425,8 +514,8 @@ export default function Screen(ctx: ComposeDslContext): ComposeNode {
                         containerColor: "#E8F5E9"
                     },
                     [
-                        ctx.UI.Row({ verticalAlignment: "center", spacing: 4 }, [
-                            ctx.UI.Icon({ name: "power_settings_new", size: 15, tint: "#2E7D32" }),
+                        ctx.UI.Row({ verticalAlignment: "center", horizontalArrangement: "center", spacing: 5 }, [
+                            ctx.UI.Icon({ name: "power_settings_new", size: 16, tint: "#2E7D32" }),
                             ctx.UI.Text({ text: "开机", color: "#2E7D32" })
                         ])
                     ]
@@ -440,8 +529,8 @@ export default function Screen(ctx: ComposeDslContext): ComposeNode {
                         containerColor: "#FFEBEE"
                     },
                     [
-                        ctx.UI.Row({ verticalAlignment: "center", spacing: 4 }, [
-                            ctx.UI.Icon({ name: "power_settings_new", size: 15, tint: "#C62828" }),
+                        ctx.UI.Row({ verticalAlignment: "center", horizontalArrangement: "center", spacing: 5 }, [
+                            ctx.UI.Icon({ name: "power_settings_new", size: 16, tint: "#C62828" }),
                             ctx.UI.Text({ text: "关机", color: "#C62828" })
                         ])
                     ]
@@ -454,8 +543,8 @@ export default function Screen(ctx: ComposeDslContext): ComposeNode {
                         shape: { cornerRadius: 12 }
                     },
                     [
-                        ctx.UI.Row({ verticalAlignment: "center", spacing: 4 }, [
-                            ctx.UI.Icon({ name: "sync", size: 15 }),
+                        ctx.UI.Row({ verticalAlignment: "center", horizontalArrangement: "center", spacing: 5 }, [
+                            ctx.UI.Icon({ name: "sync", size: 16 }),
                             ctx.UI.Text({ text: "刷新" })
                         ])
                     ]
@@ -479,7 +568,10 @@ export default function Screen(ctx: ComposeDslContext): ComposeNode {
                                 ctx.UI.Text({ text: "开发环境", style: "labelLarge", fontWeight: "bold" }),
                                 ...(envs.length > 0 ? [ctx.UI.Text({ text: `${envs.length}`, style: "labelSmall", color: "onSurfaceVariant" })] : [])
                             ]),
-                            ctx.UI.IconButton({ icon: "refresh", enabled: !busy, onClick: refreshAllAction })
+                            ctx.UI.Row({ verticalAlignment: "center", spacing: 2 }, [
+                                ctx.UI.IconButton({ icon: "link_off", enabled: true, onClick: disconnectAllAction }),
+                                ctx.UI.IconButton({ icon: "refresh", enabled: !busy, onClick: refreshAllAction })
+                            ])
                         ]),
                         ...(envItems.length > 0 ? envItems : [
                             ctx.UI.Column({ padding: { horizontal: 12, vertical: 16 }, horizontalAlignment: "center", spacing: 6 }, [
@@ -496,17 +588,17 @@ export default function Screen(ctx: ComposeDslContext): ComposeNode {
             ),
 
             // ===== 工具行 =====
-            ctx.UI.Row({ spacing: 8, fillMaxWidth: true }, [
-                ctx.UI.FilledTonalButton({ weight: 1, enabled: !busy && connected, onClick: execProbeAction, shape: { cornerRadius: 10 } }, [
-                    ctx.UI.Row({ verticalAlignment: "center", spacing: 4 }, [
-                        ctx.UI.Icon({ name: "terminal", size: 14 }),
-                        ctx.UI.Text({ text: "远程测试", style: "labelLarge" })
+            ctx.UI.Row({ spacing: 8, fillMaxWidth: true, verticalAlignment: "center" }, [
+                ctx.UI.FilledTonalButton({ weight: 1, enabled: !busy && connected, onClick: execProbeAction, shape: { cornerRadius: 12 } }, [
+                    ctx.UI.Row({ verticalAlignment: "center", horizontalArrangement: "center", spacing: 5 }, [
+                        ctx.UI.Icon({ name: "terminal", size: 16 }),
+                        ctx.UI.Text({ text: "测试" })
                     ])
                 ]),
-                ctx.UI.FilledTonalButton({ weight: 1, enabled: !busy && connected, onClick: enableRootAction, shape: { cornerRadius: 10 } }, [
-                    ctx.UI.Row({ verticalAlignment: "center", spacing: 4 }, [
-                        ctx.UI.Icon({ name: "admin_panel_settings", size: 14 }),
-                        ctx.UI.Text({ text: "启用 root", style: "labelLarge" })
+                ctx.UI.FilledTonalButton({ weight: 1, enabled: !busy && connected, onClick: enableRootAction, shape: { cornerRadius: 12 } }, [
+                    ctx.UI.Row({ verticalAlignment: "center", horizontalArrangement: "center", spacing: 5 }, [
+                        ctx.UI.Icon({ name: "admin_panel_settings", size: 16 }),
+                        ctx.UI.Text({ text: "root" })
                     ])
                 ])
             ]),

@@ -17,8 +17,8 @@ METADATA
         {
             "name": "usage_advice",
             "description": {
-                "zh": "使用建议：\n- huawei_dev_connect 可传 num 或 id 连接任意容器/虚拟机；切换自动替换旧隧道。\n- Vm 登录用户是 developer，Container 是 root，自动探测。\n- root 被拒时自动尝试 enable_root 注入公钥。\n- 首次使用先 huawei_dev_config 配置 AK/SK。\n- 开发桌面类型暂不支持。\n- 连接空闲掉线时可直接重试 exec（自动重建隧道），或调用 huawei_dev_keepalive 主动保活。",
-                "en": "- connect accepts num/id for any container/VM; switching replaces tunnel.\n- Vm uses developer, Container uses root; auto-probed.\n- Auto enable_root when root denied.\n- First-time: huawei_dev_config.\n- Desktop type not supported yet.\n- On idle disconnects: just retry exec (auto rebuilds tunnel), or call huawei_dev_keepalive."
+                "zh": "使用建议：\n- huawei_dev_connect 可传 num 或 id 连接任意容器/虚拟机；切换自动替换旧隧道。\n- Vm 登录用户是 developer，Container 是 root，自动探测。\n- root 被拒时自动尝试 enable_root 注入公钥。\n- 首次使用先 huawei_dev_config 配置 AK/SK。\n- 开发桌面类型暂不支持。\n- 连接空闲掉线时可直接重试 exec（自动重建隧道），或调用 huawei_dev_keepalive 主动保活。\n- 文件传输用 huawei_dev_upload / huawei_dev_download；排查掉线原因用 huawei_dev_logs。",
+                "en": "- connect accepts num/id for any container/VM; switching replaces tunnel.\n- Vm uses developer, Container uses root; auto-probed.\n- Auto enable_root when root denied.\n- First-time: huawei_dev_config.\n- Desktop type not supported yet.\n- On idle disconnects: just retry exec (auto rebuilds tunnel), or call huawei_dev_keepalive.\n- File transfer via huawei_dev_upload / huawei_dev_download; use huawei_dev_logs to diagnose disconnects."
             },
             "parameters": [],
             "advice": true
@@ -38,11 +38,13 @@ METADATA
         {
             "name": "huawei_dev_disconnect",
             "description": {
-                "zh": "断开：杀隧道；stop_env=false 仅断隧道保留环境。",
-                "en": "Disconnect: kill tunnel; stop_env=false keeps env."
+                "zh": "断开：杀隧道并移出保活名单；可用 id/num 指定环境，不传则断开全部。stop_env=false 仅断隧道保留环境。",
+                "en": "Disconnect: kill tunnel(s) and unmark keepalive; target via id/num, omit to kill all. stop_env=false keeps env."
             },
             "parameters": [
-                {"name": "stop_env", "description": {"zh": "同时关环境，默认 true", "en": "Stop env too, default true"}, "type": "boolean", "required": false}
+                {"name": "stop_env", "description": {"zh": "同时关环境，默认 true", "en": "Stop env too, default true"}, "type": "boolean", "required": false},
+                {"name": "id", "description": {"zh": "实例 ID；与 num 二选一，都不传=断开全部", "en": "Instance ID; with num, omit both = all"}, "type": "string", "required": false},
+                {"name": "num", "description": {"zh": "NUM 序号；与 id 二选一", "en": "NUM column"}, "type": "number", "required": false}
             ],
             "returns": true
         },
@@ -115,12 +117,62 @@ METADATA
             },
             "parameters": [],
             "returns": true
+        },
+        {
+            "name": "huawei_dev_upload",
+            "description": {
+                "zh": "上传本地(Android)文件到当前连接的云环境，走现有 SSH 隧道 scp。",
+                "en": "Upload a local (Android) file to the connected cloud env via the existing SSH tunnel (scp)."
+            },
+            "parameters": [
+                {"name": "local_path", "description": {"zh": "Android 本地文件路径", "en": "Local file path on Android"}, "type": "string", "required": true},
+                {"name": "remote_path", "description": {"zh": "远端目标路径（含文件名）", "en": "Remote destination path"}, "type": "string", "required": true}
+            ],
+            "returns": true
+        },
+        {
+            "name": "huawei_dev_download",
+            "description": {
+                "zh": "从云环境下载文件到本地(Android)，走现有 SSH 隧道 scp。",
+                "en": "Download a remote file to local (Android) via the existing SSH tunnel (scp)."
+            },
+            "parameters": [
+                {"name": "remote_path", "description": {"zh": "远程文件路径", "en": "Remote file path"}, "type": "string", "required": true},
+                {"name": "local_path", "description": {"zh": "本地保存路径；相对路径默认存到 /sdcard/Download/", "en": "Local save path; relative paths go under /sdcard/Download/"}, "type": "string", "required": true}
+            ],
+            "returns": true
+        },
+        {
+            "name": "huawei_dev_logs",
+            "description": {
+                "zh": "查看隧道日志尾部并自动诊断常见错误（掉线原因排查）。可用 id 指定环境，默认当前连接。",
+                "en": "Tail tunnel logs with auto-diagnostics for common errors. Optional id; defaults to current connection."
+            },
+            "parameters": [
+                {"name": "lines", "description": {"zh": "尾部行数，默认50，最大500", "en": "Tail lines, default 50, max 500"}, "type": "number", "required": false},
+                {"name": "id", "description": {"zh": "实例 ID，不传用当前连接", "en": "Instance ID, defaults to current"}, "type": "string", "required": false}
+            ],
+            "returns": true
+        },
+        {
+            "name": "huawei_dev_forward",
+            "description": {
+                "zh": "自定义端口转发：把远端服务的端口映射到手机本地（如 Web IDE、数据库）。action=start|stop|list；start 需 local_port/remote_port，remote_host 默认 127.0.0.1。转发走环境 SSH 隧道，多环境各自独立。",
+                "en": "Custom port forward: map remote service ports to the phone (Web IDE, DB...). action=start|stop|list; start needs local_port/remote_port; remote_host defaults to 127.0.0.1. Uses each env's own SSH tunnel."
+            },
+            "parameters": [
+                {"name": "action", "description": {"zh": "start / stop / list，默认 start", "en": "start / stop / list, default start"}, "type": "string", "required": false},
+                {"name": "local_port", "description": {"zh": "手机本地监听端口 1024-65535", "en": "Local listen port 1024-65535"}, "type": "number", "required": false},
+                {"name": "remote_port", "description": {"zh": "远端服务端口", "en": "Remote service port"}, "type": "number", "required": false},
+                {"name": "remote_host", "description": {"zh": "远端地址，默认 127.0.0.1", "en": "Remote host, default 127.0.0.1"}, "type": "string", "required": false}
+            ],
+            "returns": true
         }
     ]
 }
 */
 Object.defineProperty(exports, "__esModule", { value: true });
-const PACKAGE_VERSION = "0.2.1";
+const PACKAGE_VERSION = "0.2.2";
 const CLI_PATH = "/root/.local/bin/hdspace";
 const CLI_SOURCE = "/storage/emulated/0/Download/hdspace";
 const TUNNEL_PORT = 10022;
@@ -215,6 +267,58 @@ const STATE_DIR = "/root/.devenv/.cache";
 const CUR_ENV_FILE = `${STATE_DIR}/hds-current-env`;
 function userFile(envId) { return `${STATE_DIR}/hds-ssh-user-${envId}`; }
 
+// ==================== 端口池：多环境并行隧道基础 ====================
+const PORT_POOL_START = 10022;
+const PORT_POOL_END = 10079;
+/** 列出所有已分配的端口映射 [{envId, port}] */
+async function listAssignedPorts() {
+    const r = await runShell(`grep -H . ${STATE_DIR}/hds-port-* 2>/dev/null | sed 's|.*/hds-port-||'`, 8000, "port-mgr");
+    const out = [];
+    for (const raw of r.output.split("\n")) {
+        const m = raw.trim().match(/^([0-9a-f]{32}):(\d{4,5})$/);
+        if (m && Number(m[2]) >= PORT_POOL_START && Number(m[2]) <= PORT_POOL_END)
+            out.push({ envId: m[1], port: Number(m[2]) });
+    }
+    return out;
+}
+/** 获取（必要时分配）某环境的专属本地端口 */
+async function getEnvPort(envId) {
+    const assigned = await listAssignedPorts();
+    const found = assigned.find(a => a.envId === envId);
+    if (found)
+        return found.port;
+    const listening = await runShell(`ss -tln 2>/dev/null | awk '{print $4}' | grep -oE '[0-9]+$' | sort -un`, 8000, "port-mgr");
+    const busy = new Set(listening.output.split("\n").map(s => Number(s.trim())).filter(n => n > 0));
+    let port = 0;
+    for (let p = PORT_POOL_START; p <= PORT_POOL_END; p += 1) {
+        if (!assigned.some(a => a.port === p) && !busy.has(p)) {
+            port = p;
+            break;
+        }
+    }
+    if (!port)
+        throw new Error(`port pool exhausted (${PORT_POOL_START}-${PORT_POOL_END})`);
+    await writeState(`hds-port-${envId}`, String(port));
+    return port;
+}
+/** 自动保活登记：connect 时加入，显式 disconnect 时移除 */
+async function markAutoKeep(envId) {
+    await runShell(`mkdir -p ${STATE_DIR} && touch ${STATE_DIR}/hds-keep-${envId}`, 5000, "state-mgr");
+}
+async function unmarkAutoKeep(envId) {
+    await runShell(`rm -f ${STATE_DIR}/hds-keep-${envId}`, 5000, "state-mgr");
+}
+async function listAutoKeepEnvs() {
+    const r = await runShell(`ls ${STATE_DIR}/hds-keep-* 2>/dev/null | sed 's|.*/hds-keep-||'`, 8000, "state-mgr");
+    return r.output.split("\n").map(s => s.trim()).filter(id => /^[0-9a-f]{32}$/.test(id));
+}
+/** 统一解析目标环境及其专属端口 */
+async function resolveConnection(params) {
+    const env = await resolveTarget(params || {});
+    const port = await getEnvPort(env.id);
+    return { env, port };
+}
+
 // 兼容读取：新位置 > 旧 /tmp 位置（迁移）
 async function readState(fileBase) {
     const neu = await runShell(`cat ${STATE_DIR}/${fileBase} 2>/dev/null`, 5000);
@@ -263,9 +367,9 @@ async function resolveTarget(params) {
         }
         if (!target) {
             // 存活隧道进程的 --instance-id 最准确
-            const t = await getTunnelTarget();
-            if (t && /^[0-9a-f]{32}$/.test(t)) {
-                target = envs.find(e => e.id === t) || null;
+            const aliveIds = await getAliveTunnelIds();
+            if (aliveIds.length) {
+                target = envs.find(e => e.id === aliveIds[0]) || null;
             }
         }
         if (!target) {
@@ -314,33 +418,31 @@ async function waitForState(env, wantStates, timeoutMs) {
     }
     return lastState;
 }
-/** 读取当前隧道进程实际指向的实例 ID（无隧道或解析失败返回 ""） */
-async function getTunnelTarget() {
-    const r = await runShell(`pgrep -af '${TUNNEL_PROC_PATTERN}' 2>/dev/null | grep -o -- '--instance-id=[0-9a-f]*' | head -1 | cut -d= -f2`, 8000);
-    const id = firstNonBlank(r.output);
-    return /^[0-9a-f]{32}$/.test(id) ? id : "";
+/** 列出所有存活的隧道及其环境 ID */
+async function getAliveTunnelIds() {
+    const r = await runShell("pgrep -af '" + TUNNEL_PROC_PATTERN + "' 2>/dev/null | grep -o -- '--instance-id=[0-9a-f]*' | cut -d= -f2 | sort -u", 8000, "port-mgr");
+    return r.output.split("\n").map(function (s) { return s.trim(); }).filter(function (id) { return /^[0-9a-f]{32}$/.test(id); });
 }
-/** 是否存在指向指定环境的存活隧道 */
+/** 指定环境是否有存活隧道 */
 async function isTunnelAliveFor(envId) {
-    const alive = await runShell(`pgrep -f '${TUNNEL_PROC_PATTERN}' >/dev/null 2>&1 && echo ALIVE || echo DEAD`, 8000);
-    if (alive.output.indexOf("ALIVE") < 0)
-        return false;
-    // 指向不明也视为不匹配，宁可重建
-    return (await getTunnelTarget()) === envId;
+    const r = await runShell("pgrep -af '" + TUNNEL_PROC_PATTERN + "' 2>/dev/null | grep -- '--instance-id=" + envId + "' >/dev/null && echo ALIVE || echo DEAD", 8000, "tunnel-mgr");
+    return r.output.indexOf("ALIVE") >= 0;
 }
 /** 是否存在任意存活的隧道进程 */
 async function isTunnelAlive() {
-    const r = await runShell(`pgrep -f '${TUNNEL_PROC_PATTERN}' >/dev/null 2>&1 && echo ALIVE || echo DEAD`, 8000);
+    const r = await runShell(`pgrep -f '${TUNNEL_PROC_PATTERN}' >/dev/null 2>&1 && echo ALIVE || echo DEAD`, 8000, "probe");
     return r.output.indexOf("ALIVE") >= 0;
 }
-async function killTunnel() {
-    const kill = await runShell(`pkill -f '${TUNNEL_PROC_PATTERN}' 2>/dev/null; sleep 1; pgrep -f '${TUNNEL_PROC_PATTERN}' >/dev/null && echo STILL_ALIVE || echo KILLED`, 10000);
+/** 杀掉指定环境的隧道（envId 省略时杀全部——仅显式 disconnect 使用） */
+async function killTunnel(envId) {
+    const pattern = envId ? `${TUNNEL_PROC_PATTERN}.*--instance-id=${envId}` : TUNNEL_PROC_PATTERN;
+    const kill = await runShell(`pkill -f '${pattern}' 2>/dev/null; sleep 1; pgrep -f '${pattern}' >/dev/null && echo STILL_ALIVE || echo KILLED`, 10000, "tunnel-mgr");
     return kill.output.indexOf("KILLED") >= 0;
 }
 /** 原子启动：同 shell 内先自愈密钥环，再 setsid nohup 启动隧道 */
-function buildTunnelCommand(envId) {
+function buildTunnelCommand(envId, port) {
     const logFile = `/tmp/hds-tunnel-${envId}.log`;
-    return `DBUS_SESSION_BUS_ADDRESS=${DBUS_ADDRESS} bash ${ENV_SETUP_SCRIPT} >/dev/null 2>&1; DBUS_SESSION_BUS_ADDRESS=${DBUS_ADDRESS} setsid nohup ${CLI_PATH} devenv start-tunnel --instance-id=${envId} --ports=${TUNNEL_PORT}:${REMOTE_SSH_PORT} > ${logFile} 2>&1 < /dev/null & sleep 0.3; echo TUNNEL_PID=$!`;
+    return `DBUS_SESSION_BUS_ADDRESS=${DBUS_ADDRESS} bash ${ENV_SETUP_SCRIPT} >/dev/null 2>&1; DBUS_SESSION_BUS_ADDRESS=${DBUS_ADDRESS} setsid nohup ${CLI_PATH} devenv start-tunnel --instance-id=${envId} --ports=${port}:${REMOTE_SSH_PORT} > ${logFile} 2>&1 < /dev/null & sleep 0.3; echo TUNNEL_PID=$!`;
 }
 async function waitPortOpen(port, timeoutMs) {
     const deadline = Date.now() + timeoutMs;
@@ -362,32 +464,49 @@ async function trimTunnelLogs() {
     await runShell(`for f in /tmp/hds-tunnel-*.log; do [ -f "$f" ] && [ "$(wc -c < "$f")" -gt 262144 ] && tail -c 65536 "$f" > "$f.tmp" && mv "$f.tmp" "$f"; done 2>/dev/null; true`, 8000, "log-maint");
 }
 /** 启动隧道并等待端口开放；失败自动重启重试（hdspace 偶发 success 后自退） */
-async function startTunnelWithRetry(envId) {
+async function startTunnelWithRetry(envId, port) {
     const attempts = [];
     await trimTunnelLogs();
     for (let attempt = 1; attempt <= TUNNEL_RESTART_RETRIES; attempt += 1) {
-        await killTunnel();
-        const t = await runShell(buildTunnelCommand(envId), 15000, "tunnel-mgr");
+        await killTunnel(envId);
+        const t = await runShell(buildTunnelCommand(envId, port), 15000, "tunnel-mgr");
         attempts.push(`launch#${attempt}: exit=${t.exitCode}`);
-        const opened = await waitPortOpen(TUNNEL_PORT, 25000);
-        attempts.push(`port#${attempt}: ${opened ? "OPEN" : "CLOSED"}`);
+        const opened = await waitPortOpen(port, 25000);
+        attempts.push(`port#${attempt}@${port}: ${opened ? "OPEN" : "CLOSED"}`);
         if (opened) {
             // 端口开了还要确认进程没自退
-            const still = await runShell(`pgrep -f '${TUNNEL_PROC_PATTERN}' >/dev/null 2>&1 && echo ALIVE || echo DEAD`, 5000);
-            if (still.output.indexOf("ALIVE") >= 0) {
+            const still = await isTunnelAliveFor(envId);
+            if (still) {
                 attempts.push(`process#${attempt}: ALIVE`);
                 return { ok: true, attempts };
             }
             attempts.push(`process#${attempt}: exited unexpectedly`);
             continue;
         }
-        const log = await runShell(`tail -5 /tmp/hds-tunnel-${envId}.log 2>/dev/null`, 8000);
+        const log = await runShell(`tail -5 /tmp/hds-tunnel-${envId}.log 2>/dev/null`, 8000, "log-maint");
         attempts.push(`log#${attempt}: ${firstLine(log.output).slice(0, 120)}`);
     }
     return { ok: false, attempts };
 }
-/** 统一 SSH 基础参数：防挂起 + 固定密钥 */
-function sshBaseArgs(identityPath, knownHosts) {
+/** 统一 SSH 基础参数：防挂起 + 固定密钥（port 可省略，默认该环境的端口池端口） */
+async function sshBaseArgsFor(envId, port) {
+    const p = port || (await getEnvPort(envId));
+    return {
+        args: [
+            "ssh -o ConnectTimeout=10",
+            "-o BatchMode=yes",
+            "-o IdentitiesOnly=yes",
+            "-o PasswordAuthentication=no",
+            "-o StrictHostKeyChecking=no",
+            `-o UserKnownHostsFile=${KNOWN_HOSTS_DIR}/${envId}`,
+            `-i ${IDENTITY_DIR}/${envId}`,
+            `-p ${p}`
+        ],
+        port: p
+    };
+}
+/** 同步版（兼容既有调用点）：显式传 port */
+function sshBaseArgs(identityPath, knownHosts, port) {
     return [
         "ssh -o ConnectTimeout=10",
         "-o BatchMode=yes",
@@ -396,20 +515,22 @@ function sshBaseArgs(identityPath, knownHosts) {
         "-o StrictHostKeyChecking=no",
         `-o UserKnownHostsFile=${knownHosts}`,
         `-i ${identityPath}`,
-        `-p ${TUNNEL_PORT}`
+        `-p ${port}`
     ];
 }
 /** 主机指纹过期自愈 */
-async function healKnownHosts(envId) {
+async function healKnownHosts(envId, port) {
+    const p = port || (await getEnvPort(envId));
     const knownHosts = `${KNOWN_HOSTS_DIR}/${envId}`;
-    await runShell(`ssh-keygen -f '${knownHosts}' -R '[127.0.0.1]:${TUNNEL_PORT}' >/dev/null 2>&1; rm -f '${knownHosts}' 2>/dev/null; echo HEALED`, 8000);
+    await runShell(`ssh-keygen -f '${knownHosts}' -R '[127.0.0.1]:${p}' >/dev/null 2>&1; rm -f '${knownHosts}' 2>/dev/null; echo HEALED`, 8000, "ssh-heal");
 }
 /** 以指定用户探测 SSH；失败分类：keyMismatch / hostChanged / noRoute / other */
 async function trySshAs(envId, user) {
-    const parts = [...sshBaseArgs(`${IDENTITY_DIR}/${envId}`, `${KNOWN_HOSTS_DIR}/${envId}`)];
+    const { args } = await sshBaseArgsFor(envId);
+    const parts = [...args];
     parts.push(`${user}@127.0.0.1`);
     parts.push("'echo __SSH_OK__'");
-    const r = await runShell(parts.join(" "), 25000);
+    const r = await runShell(parts.join(" "), 25000, "probe");
     const out = r.output;
     if (out.indexOf("__SSH_OK__") >= 0)
         return { ok: true, category: "ok", detail: user };
@@ -489,8 +610,8 @@ async function persistToolResult(key, data) {
 async function huaweiDevConnect(params) {
     const steps = [];
     const keyringOk = await ensureKeyring();
-    const env = await resolveTarget(params);
-    steps.push(`target: #${env.num} ${env.name} (${env.id}) state=${env.state} type=${env.type}`);
+    const { env, port } = await resolveConnection(params);
+    steps.push(`target: #${env.num} ${env.name} (${env.id}) state=${env.state} type=${env.type} port=${port}`);
     // 步骤1：确保 Running
     if (env.state !== "Running") {
         if (env.state === "Stopping") {
@@ -511,22 +632,20 @@ async function huaweiDevConnect(params) {
     else {
         steps.push("already Running");
     }
-    // 步骤2：隧道——校验存活隧道指向，不一致就重建
+    // 步骤2：隧道——按环境独立管理（多环境并行）
     if (await isTunnelAliveFor(env.id)) {
-        steps.push("tunnel alive for this env");
+        steps.push(`tunnel alive for this env @${port}`);
     }
     else {
-        const oldTarget = await getTunnelTarget();
-        if (oldTarget && oldTarget !== env.id) {
-            steps.push(`old tunnel points to ${oldTarget.slice(0, 8)}..., rebuilding`);
-        }
-        const t = await startTunnelWithRetry(env.id);
+        const t = await startTunnelWithRetry(env.id, port);
         steps.push(...t.attempts);
         if (!t.ok)
             throw new Error(`tunnel failed after retries: ${t.attempts.join(" | ").slice(-400)}`);
     }
-    // 记录当前选择（resolveTarget 无参时的最高优先级依据）
+    // 登记自动保活 + 记录当前选择 + 缓存环境名
+    await markAutoKeep(env.id);
     await writeState('hds-current-env', env.id);
+    await writeState(`hds-name-${env.id}`, `${env.name} #${env.num}`);
     // 步骤3：探测登录用户并验证
     const probe = await probeUser(env);
     const user = probe.user;
@@ -556,9 +675,27 @@ async function huaweiDevConnect(params) {
         user,
         rootOk,
         steps,
-        localPort: TUNNEL_PORT,
-        error: success ? "" : "no working login user found"
+        localPort: port,
+        error: success ? "" : "no working login user found",
+        failReason: success ? "" : buildFailReason(steps, user, keyringOk)
     });
+}
+/** 汇总步骤日志生成人话版失败原因 */
+function buildFailReason(steps, user, keyringOk) {
+    const tail = steps.slice(-6).join(" | ");
+    if (!keyringOk)
+        return "密钥环不可用：dbus/gnome-keyring 未就绪，请先在终端执行 hds-env-setup.sh";
+    if (tail.indexOf("keyMismatch") >= 0 || tail.indexOf("ssh-key-reset") >= 0)
+        return "SSH 密钥失配：已尝试官方 ssh-key-reset 仍未通过，请重新 connect 或检查环境是否重建过";
+    if (tail.indexOf("hostChanged") >= 0)
+        return "远端主机指纹变化：known_hosts 已自动清理，请重试连接";
+    if (tail.indexOf("tunnel failed") >= 0 || tail.indexOf("port#") >= 0 && tail.indexOf("CLOSED") >= 0)
+        return `隧道建立失败：${tail.slice(-200)}`;
+    if (tail.indexOf("did not reach Running") >= 0 || tail.indexOf("not reach Running") >= 0)
+        return "环境未能进入 Running 状态：可能云侧配额/资源问题，请到控制台确认";
+    if (!user)
+        return "SSH 登录探测失败：root 与 developer 用户均无法登录，详见 steps 日志";
+    return tail.slice(-300);
 }
 /** 开/关机（不建隧道）：target 可为任意环境，支持 id/num 参数 */
 async function huaweiDevPower(params) {
@@ -573,7 +710,8 @@ async function huaweiDevPower(params) {
         env = await resolveTarget(params);
     }
     else {
-        const tunnelId = await getTunnelTarget();
+        const aliveIds = await getAliveTunnelIds();
+        const tunnelId = firstNonBlank(aliveIds);
         const curId = await readState("hds-current-env");
         const targetId = tunnelId || curId;
         if (!targetId) {
@@ -639,14 +777,13 @@ async function huaweiDevPower(params) {
  * 成功时记录 last_ok 时间戳，供 status/keepalive 判断隧道健康度。
  */
 async function sshEchoProbe(envId, user, executorKey) {
-    const identityPath = `${IDENTITY_DIR}/${envId}`;
-    const knownHosts = `${KNOWN_HOSTS_DIR}/${envId}`;
     if (!user) {
         user = await getCurrentUser({ id: envId, num: "", name: "", state: "", type: "" });
     }
     if (!user)
         return { ok: false, reason: "no known login user" };
-    const parts = [...sshBaseArgs(identityPath, knownHosts)];
+    const { args } = await sshBaseArgsFor(envId);
+    const parts = [...args];
     parts.push(`${user}@127.0.0.1`);
     parts.push("'echo __KEEPALIVE_OK__'");
     const r = await runShell(parts.join(" "), 20000, executorKey || "probe");
@@ -661,71 +798,304 @@ async function getLastOk() {
     const v = await readState("hds-last-ok-ts");
     return Number(v) > 0 ? Number(v) : 0;
 }
-/** keepalive 工具实现：真实探测 + 僵死自愈 */
+/** keepalive 工具实现：真实探测 + 僵死自愈（多环境并行版） */
 async function huaweiDevKeepalive(params) {
     void params;
     const steps = [];
-    const alive = await isTunnelAlive();
-    steps.push(`tunnel process: ${alive ? "ALIVE" : "DOWN"}`);
-    if (!alive) {
-        // 进程没了：若之前有 current-env，自动重建
-        const curId = await readState("hds-current-env");
-        if (!curId) {
-            steps.push("no previous env; nothing to revive");
-            return await persistToolResult("keepalive", { success: false, action: "none", steps });
-        }
-        steps.push(`reviving tunnel for ${curId.slice(0, 8)}...`);
-        const t = await startTunnelWithRetry(curId);
-        steps.push(...t.attempts);
-        if (t.ok) {
-            await markLastOk(curId);
-            return await persistToolResult("keepalive", { success: true, action: "revived", envId: curId, steps });
-        }
-        throw new Error(`tunnel revival failed: ${t.attempts.join(" | ").slice(-300)}`);
+    // 收集需要保活的环境：登记过的 + 存活隧道的
+    const keepEnvs = await listAutoKeepEnvs();
+    const aliveIds = await getAliveTunnelIds();
+    let targets = [...keepEnvs];
+    for (const id of aliveIds) {
+        if (/^[0-9a-f]{32}$/.test(id) && targets.indexOf(id) < 0)
+            targets.push(id);
     }
-    // 进程在：做真实通信探测
-    const tunnelTarget = await getTunnelTarget();
-    const targetId = tunnelTarget || (await readState("hds-current-env"));
-    if (!targetId) {
-        steps.push("tunnel alive but target unknown; treating as healthy");
+    if (!targets.length) {
+        steps.push("no registered or active tunnels; nothing to do");
         return await persistToolResult("keepalive", { success: true, action: "none", steps });
     }
-    const probe = await sshEchoProbe(targetId, "");
-    steps.push(probe.ok ? `ssh echo OK as ${probe.user}` : `ssh echo FAILED (${probe.reason})`);
-    if (probe.ok) {
-        await markLastOk(targetId);
-        return await persistToolResult("keepalive", { success: true, action: "verified", envId: targetId, user: probe.user, steps });
+    let allOk = true;
+    const results = [];
+    for (const envId of targets) {
+        const port = await getEnvPort(envId);
+        if (!(await isTunnelAliveFor(envId))) {
+            steps.push(`[${envId.slice(0, 8)}] tunnel DOWN, reviving @${port}...`);
+            const t = await startTunnelWithRetry(envId, port);
+            steps.push(...t.attempts.map(a => `[${envId.slice(0, 8)}] ${a}`));
+            if (!t.ok) {
+                allOk = false;
+                results.push({ envId, ok: false, action: "revive_failed" });
+                continue;
+            }
+        }
+        const probe = await sshEchoProbe(envId, "");
+        steps.push(`[${envId.slice(0, 8)}] ssh echo ${probe.ok ? `OK as ${probe.user}` : `FAILED (${probe.reason})`} @${port}`);
+        if (!probe.ok) {
+            steps.push(`[${envId.slice(0, 8)}] zombie detected; rebuilding...`);
+            const t = await startTunnelWithRetry(envId, port);
+            steps.push(...t.attempts.map(a => `[${envId.slice(0, 8)}] ${a}`));
+            const reprobe = await sshEchoProbe(envId, probe.user || "");
+            steps.push(`[${envId.slice(0, 8)}] re-verify ${reprobe.ok ? "OK" : "FAILED"}`);
+            if (!reprobe.ok) {
+                allOk = false;
+                results.push({ envId, ok: false, action: "zombie_rebuild_failed" });
+                continue;
+            }
+            results.push({ envId, ok: true, action: "rebuilt", user: reprobe.user });
+        }
+        else {
+            await markLastOk(envId);
+            results.push({ envId, ok: true, action: "verified", user: probe.user });
+        }
     }
-    // 半开僵死 → 重建
-    steps.push("tunnel appears half-open zombie; rebuilding...");
-    const t = await startTunnelWithRetry(targetId);
-    steps.push(...t.attempts);
-    if (!t.ok)
-        throw new Error(`zombie rebuild failed: ${t.attempts.join(" | ").slice(-300)}`);
-    const reprobe = await sshEchoProbe(targetId, probe.user || "");
-    steps.push(reprobe.ok ? "re-verify OK after rebuild" : `still failing after rebuild (${reprobe.reason})`);
-    if (reprobe.ok)
-        await markLastOk(targetId);
     return await persistToolResult("keepalive", {
-        success: reprobe.ok,
-        action: "rebuilt",
-        envId: targetId,
+        success: allOk,
+        checked: targets.length,
+        results,
+        lastOkTs: Date.now(),
         steps
     });
 }
+/** 文件上传：本地(Android) → 远程，走现有隧道 scp */
+async function huaweiDevUpload(params) {
+    const localPath = asText(params?.local_path).trim();
+    const remotePath = asText(params?.remote_path).trim();
+    if (!localPath || !remotePath)
+        throw new Error("local_path and remote_path are required");
+    if (!(await isTunnelAlive())) {
+        throw new Error("tunnel not running, call huawei_dev_connect first");
+    }
+    const env = await resolveTarget({});
+    const port = await getEnvPort(env.id);
+    let user = await getCurrentUser(env);
+    if (!user)
+        throw new Error("no working login user; run huawei_dev_connect first");
+    // Android 侧路径转 proot 可见路径
+    const prootLocal = localPath.replace(/^\/storage\/emulated\/0/, "/sdcard").replace(/^\/sdcard/, "/sdcard");
+    const existsCheck = await runShell(`test -f '${prootLocal}' && echo EXISTS || echo MISSING`, 8000, "file-xfer");
+    if (existsCheck.output.indexOf("EXISTS") < 0) {
+        return await persistToolResult("upload", {
+            success: false,
+            failReason: `本地文件不存在：${localPath}（终端侧解析为 ${prootLocal}）`
+        });
+    }
+    const sizeOut = await runShell(`wc -c < '${prootLocal}'`, 8000, "file-xfer");
+    const sizeBytes = Number(firstNonBlank(sizeOut.output)) || 0;
+    const escRemote = remotePath.replace(/'/g, `'\\''`);
+    const scpCmd = [
+        "scp -o ConnectTimeout=10",
+        "-o BatchMode=yes",
+        "-o IdentitiesOnly=yes",
+        "-o PasswordAuthentication=no",
+        "-o StrictHostKeyChecking=no",
+        `-o UserKnownHostsFile=${KNOWN_HOSTS_DIR}/${env.id}`,
+        `-i ${IDENTITY_DIR}/${env.id}`,
+        `-P ${port}`,
+        `'${prootLocal}'`,
+        `${user}@127.0.0.1:'${escRemote}'`
+    ].join(" ");
+    const r = await runShell(scpCmd, Math.max(120000, sizeBytes / 500), "file-xfer");
+    const ok = r.exitCode === 0 && !r.timedOut;
+    return await persistToolResult("upload", {
+        success: ok,
+        user,
+        envId: env.id,
+        localPath,
+        remotePath,
+        sizeBytes,
+        exitCode: r.exitCode,
+        output: r.output.slice(-400),
+        failReason: ok ? "" : (r.timedOut
+            ? "传输超时中断：文件过大或隧道不稳，可重试"
+            : `scp 失败（exit=${r.exitCode}）：${firstLine(r.output).slice(-200)}；若目标是 root 目录而登录用户非 root，远端可能无写权限`)
+    });
+}
+/** 文件下载：远程 → 本地(Android)，走现有隧道 scp */
+async function huaweiDevDownload(params) {
+    const remotePath = asText(params?.remote_path).trim();
+    const localPath = asText(params?.local_path).trim();
+    if (!remotePath || !localPath)
+        throw new Error("remote_path and local_path are required");
+    if (!(await isTunnelAlive())) {
+        throw new Error("tunnel not running, call huawei_dev_connect first");
+    }
+    const env = await resolveTarget({});
+    const port = await getEnvPort(env.id);
+    let user = await getCurrentUser(env);
+    if (!user)
+        throw new Error("no working login user; run huawei_dev_connect first");
+    const prootLocal = localPath.startsWith("/") ? localPath : `/sdcard/Download/${localPath}`;
+    await runShell(`mkdir -p "$(dirname '${prootLocal}')"`, 8000, "file-xfer");
+    const escRemote = remotePath.replace(/'/g, `'\\''`);
+    const scpCmd = [
+        "scp -o ConnectTimeout=10",
+        "-o BatchMode=yes",
+        "-o IdentitiesOnly=yes",
+        "-o PasswordAuthentication=no",
+        "-o StrictHostKeyChecking=no",
+        `-o UserKnownHostsFile=${KNOWN_HOSTS_DIR}/${env.id}`,
+        `-i ${IDENTITY_DIR}/${env.id}`,
+        `-P ${port}`,
+        `${user}@127.0.0.1:'${escRemote}'`,
+        `'${prootLocal}'`
+    ].join(" ");
+    const r = await runShell(scpCmd, 180000, "file-xfer");
+    const ok = r.exitCode === 0 && !r.timedOut;
+    return await persistToolResult("download", {
+        success: ok,
+        user,
+        envId: env.id,
+        remotePath,
+        localPath: prootLocal,
+        exitCode: r.exitCode,
+        output: r.output.slice(-400),
+        failReason: ok ? "" : (r.timedOut
+            ? "下载超时中断：文件过大或隧道不稳，可重试"
+            : r.output.indexOf("No such file or directory") >= 0
+                ? `远程文件不存在：${remotePath}`
+                : `scp 失败（exit=${r.exitCode}）：${firstLine(r.output).slice(-200)}`)
+    });
+}
+/** 查看隧道日志尾部：掉线原因排查利器 */
+async function huaweiDevLogs(params) {
+    const lines = Number(params?.lines) > 0 ? Number(params.lines) : 50;
+    const envIdParam = asText(params?.id).trim().toLowerCase();
+    let targetId = envIdParam;
+    if (!targetId || !/^[0-9a-f]{32}$/.test(targetId)) {
+        targetId = (await getAliveTunnelIds())[0] || (await readState("hds-current-env")) || "";
+    }
+    if (!targetId) {
+        // 没有明确目标：取最新修改的日志文件
+        const ls = await runShell(`ls -t /tmp/hds-tunnel-*.log 2>/dev/null | head -1`, 8000, "log-view");
+        const latest = firstNonBlank(ls.output);
+        if (!latest)
+            return await persistToolResult("logs", {
+                success: false,
+                failReason: "没有任何隧道日志：尚未建立过连接"
+            });
+        targetId = latest.replace(/.*hds-tunnel-/, "").replace(/\.log$/, "");
+    }
+    const logFile = `/tmp/hds-tunnel-${targetId}.log`;
+    const r = await runShell(`tail -n ${Math.min(lines, 500)} '${logFile}' 2>/dev/null; echo "---SIZE---"; wc -c < '${logFile}' 2>/dev/null`, 10000, "log-view");
+    const segs = r.output.split("---SIZE---");
+    const content = firstNonBlank(segs[0]) || "(日志为空)";
+    const sizeBytes = Number(firstNonBlank(segs[1])) || 0;
+    // 简易诊断：识别常见错误关键词
+    const diag = [];
+    if (/Connection reset/i.test(content))
+        diag.push("检测到 Connection reset：远端主动断开（可能环境重启/网络抖动）");
+    if (/timed out/i.test(content))
+        diag.push("检测到超时：网络不稳定或 NAT 回收了空闲连接");
+    if (/Permission denied|publickey/i.test(content))
+        diag.push("检测到认证失败：密钥可能失配");
+    if (/Address already in use/i.test(content))
+        diag.push("端口被占用：可能有残留隧道进程，建议 disconnect 后重连");
+    return await persistToolResult("logs", {
+        success: true,
+        envId: targetId,
+        logFile,
+        sizeBytes,
+        tailLines: Math.min(lines, 500),
+        content: content.split("\n").slice(-Math.min(lines, 500)).join("\n"),
+        diagnostics: diag
+    });
+}
+
+/** 自定义本地端口转发：local_port -> remote_host:remote_port（复用环境 SSH 隧道） */
+async function huaweiDevForward(params) {
+    const localPort = Number(params?.local_port);
+    const remotePort = Number(params?.remote_port);
+    const remoteHost = asText(params?.remote_host).trim() || "127.0.0.1";
+    const action = asText(params?.action).trim().toLowerCase() || "start";
+    if (action !== "start" && action !== "stop" && action !== "list") {
+        throw new Error("action must be 'start' | 'stop' | 'list'");
+    }
+    // 列出当前所有转发
+    if (action === "list") {
+        const r = await runShell(`pgrep -af 'ssh.*-L.*${PORT_POOL_END}' 2>/dev/null; pgrep -af 'socat TCP-LISTEN' 2>/dev/null; true`, 8000, "fwd-mgr");
+        return await persistToolResult("forward", {
+            success: true,
+            forwards: r.output.trim().split("\n").filter(l => l.indexOf("-L") >= 0 || l.indexOf("TCP-LISTEN") >= 0),
+            hint: "每条形如: ssh ... -L local:host:port user@..."
+        });
+    }
+    if (!localPort || localPort < 1024 || localPort > 65535)
+        throw new Error("local_port must be 1024-65535");
+    if (action !== "stop" && (!remotePort || remotePort < 1 || remotePort > 65535))
+        throw new Error("remote_port must be 1-65535");
+    if (!(await isTunnelAlive())) {
+        throw new Error("tunnel not running, call huawei_dev_connect first");
+    }
+    const env = await resolveTarget({});
+    const { args } = await sshBaseArgsFor(env.id);
+    const user = await getCurrentUser(env);
+    if (!user)
+        throw new Error("no working login user; run connect first");
+    if (action === "stop") {
+        // 杀掉匹配该本地端口的转发进程
+        const kill = await runShell(`pkill -f '\\-L ${localPort}:' 2>/dev/null; sleep 0.5; pgrep -f '\\-L ${localPort}:' >/dev/null && echo STILL_ALIVE || echo KILLED`, 10000, "fwd-mgr");
+        const ok = kill.output.indexOf("KILLED") >= 0;
+        return await persistToolResult("forward", {
+            success: ok,
+            action: "stop",
+            localPort,
+            failReason: ok ? "" : "没有找到该端口的转发进程，或已被终止"
+        });
+    }
+    // start：setsid 后台启动 ssh -N -L
+    const fwdArgs = [...args];
+    fwdArgs[0] = "ssh -N";
+    const fwdCmd = `DBUS_SESSION_BUS_ADDRESS=\${DBUS_ADDRESS} setsid nohup ${fwdArgs.join(" ")} -L ${localPort}:${remoteHost}:${remotePort} ${user}@127.0.0.1 > /tmp/hds-forward-${localPort}.log 2>&1 < /dev/null & sleep 0.3; echo FWD_PID=$!`;
+    const launch = await runShell(fwdCmd, 12000, "fwd-mgr");
+    await new Promise(res => setTimeout(res, 2500));
+    const opened = await waitPortOpenOnce(localPort);
+    return await persistToolResult("forward", {
+        success: opened,
+        action: "start",
+        envId: env.id,
+        user,
+        localPort,
+        remoteHost,
+        remotePort,
+        accessHint: `手机浏览器/应用访问 http://127.0.0.1:${localPort} 即可到达远端 ${remoteHost}:${remotePort}`,
+        failReason: opened ? "" : `转发未就绪：${firstLine(launch.output).slice(-150)}；检查远端服务是否在 ${remoteHost}:${remotePort} 监听`
+    });
+}
+
 async function huaweiDevDisconnect(params) {
     const stopEnv = params?.stop_env !== false;
     const steps = [];
-    // 先确定目标（杀隧道前），因为 getTunnelTarget 依赖存活进程
-    const tunnelId = await getTunnelTarget();
-    const curId = await readState("hds-current-env");
-    const targetId = tunnelId || curId;
-    const killed = await killTunnel();
-    steps.push(killed ? "tunnel killed" : "tunnel already dead");
+    // 目标解析：显式 id/num > 隧道指向 > current-env
+    let targetId = "";
+    if (params?.id != null || params?.num != null) {
+        try {
+            const env = await resolveTarget(params);
+            targetId = env.id;
+        }
+        catch (e) {
+            throw new Error(`target env not found: ${asText(e.message).slice(0, 150)}`);
+        }
+    }
+    else {
+        targetId = (await getAliveTunnelIds())[0] || (await readState("hds-current-env")) || "";
+    }
+    if (!targetId && !stopEnv) {
+        return await persistToolResult("disconnect", {
+            success: false,
+            stoppedEnv: false,
+            targetId: null,
+            failReason: "没有可断开的连接：无活动隧道也无历史记录",
+            steps: ["no tunnel and no history"]
+        });
+    }
+    // 杀指定环境的隧道；未指定目标时杀全部（显式断开语义）
+    const killed = targetId ? await killTunnel(targetId) : await killTunnel();
+    steps.push(killed ? `tunnel killed${targetId ? ` (${targetId.slice(0, 8)})` : ""}` : "tunnel already dead");
+    if (targetId)
+        await unmarkAutoKeep(targetId);
     let stopped = "";
     if (stopEnv) {
         if (!targetId) {
-            // 无活动连接迹象：绝不走 Running 兜底，避免误关无关环境
             steps.push("no active connection known; not stopping any env (safety)");
         }
         else {
@@ -764,17 +1134,47 @@ async function huaweiDevList(params) {
 async function huaweiDevStatus(params) {
     void params;
     const steps = [];
-    const alive = await isTunnelAlive();
-    const tunnelTarget = alive ? await getTunnelTarget() : "";
-    steps.push(`tunnel: ${alive ? "ALIVE" : "DOWN"}${tunnelTarget ? ` -> ${tunnelTarget}` : ""}`);
-    let portOpen = false;
-    if (alive) {
-        portOpen = await waitPortOpenOnce(TUNNEL_PORT);
-        steps.push(`port ${TUNNEL_PORT}: ${portOpen ? "OPEN" : "CLOSED"}`);
+    // ===== 多环境连接总览 =====
+    const assigned = await listAssignedPorts();
+    const connections = [];
+    for (const a of assigned) {
+        const tunnelAlive = await isTunnelAliveFor(a.envId);
+        const portOpen = tunnelAlive ? await waitPortOpenOnce(a.port) : false;
+        let user = "";
+        if (tunnelAlive && portOpen) {
+            const probe = await sshEchoProbe(a.envId, "");
+            user = probe.ok ? (probe.user || "") : "";
+        }
+        // 环境名从缓存/列表补齐
+        const envName = firstNonBlank(await readState(`hds-name-${a.envId}`));
+        connections.push({
+            envId: a.envId,
+            envName,
+            port: a.port,
+            tunnelAlive,
+            portOpen,
+            sshOk: !!user,
+            user
+        });
     }
+    steps.push(`active tunnels: ${connections.filter(c => c.tunnelAlive).length}/${assigned.length} registered`);
+    // ===== 当前环境详情（兼容旧字段）=====
+    const alive = await isTunnelAlive();
+    const currentTarget = (await getAliveTunnelIds())[0] || (await readState("hds-current-env")) || "";
+    let port = 0;
+    let portOpen = false;
+    if (currentTarget) {
+        port = await getEnvPort(currentTarget).catch(() => 0);
+        if (port && alive)
+            portOpen = await waitPortOpenOnce(port);
+    }
+    else {
+        port = TUNNEL_PORT;
+    }
+    steps.push(`current: ${currentTarget.slice(0, 8)} @${port} ${portOpen ? "OPEN" : "CLOSED"}`);
     let envState = "unknown";
     let envName = "";
-    let envId = "";
+    let envId = currentTarget;
     let envType = "";
     try {
         const env = await resolveTarget({});
@@ -807,11 +1207,13 @@ async function huaweiDevStatus(params) {
         success: true,
         connected: alive && portOpen && sshOk,
         tunnelAlive: alive,
-        tunnelTarget,
+        tunnelTarget: currentTarget,
+        port,
         portOpen,
         sshOk,
         user,
         envState, envName, envId, envType,
+        connections,
         lastOkTs: await getLastOk(),
         steps
     });
@@ -841,19 +1243,19 @@ async function huaweiDevExec(params) {
         throw new Error("tunnel not running, call huawei_dev_connect first");
     }
     const env = await resolveTarget({});
-    const identityPath = `${IDENTITY_DIR}/${env.id}`;
-    const knownHosts = `${KNOWN_HOSTS_DIR}/${env.id}`;
+    const port = await getEnvPort(env.id);
     let user = await getCurrentUser(env);
     if (!user)
         throw new Error("no working login user; run huawei_dev_connect first");
     const escaped = command.replace(/'/g, `'\\''`);
-    const buildCmd = () => {
-        const parts = [...sshBaseArgs(identityPath, knownHosts)];
+    const buildCmd = async () => {
+        const { args } = await sshBaseArgsFor(env.id, port);
+        const parts = [...args];
         parts.push(`${user}@127.0.0.1`);
         parts.push(`'${escaped}'`);
         return parts.join(" ");
     };
-    let r = await runShell(buildCmd(), Math.max(timeoutMs + 10000, 20000), "ssh-exec");
+    let r = await runShell(await buildCmd(), Math.max(timeoutMs + 10000, 20000), "ssh-exec");
     let success = r.exitCode === 0 && !r.timedOut;
     // 隧道自愈：半开/端口死 → 重建后重试一次（用户无感）
     const tunnelDead = !success
@@ -861,9 +1263,9 @@ async function huaweiDevExec(params) {
             || r.output.indexOf("Connection timed out") >= 0
             || r.output.indexOf("kex_exchange_identification") >= 0);
     if (tunnelDead) {
-        const t = await startTunnelWithRetry(env.id);
+        const t = await startTunnelWithRetry(env.id, port);
         if (t.ok) {
-            r = await runShell(buildCmd(), Math.max(timeoutMs + 10000, 20000), "ssh-exec");
+            r = await runShell(await buildCmd(), Math.max(timeoutMs + 10000, 20000), "ssh-exec");
             success = r.exitCode === 0 && !r.timedOut;
             if (success)
                 await markLastOk(env.id);
@@ -872,15 +1274,15 @@ async function huaweiDevExec(params) {
     // 自愈：指纹变化 / 密钥失配
     if (!success) {
         if (r.output.indexOf("REMOTE HOST IDENTIFICATION HAS CHANGED") >= 0) {
-            await healKnownHosts(env.id);
-            r = await runShell(buildCmd(), Math.max(timeoutMs + 10000, 20000));
+            await healKnownHosts(env.id, port);
+            r = await runShell(await buildCmd(), Math.max(timeoutMs + 10000, 20000), "ssh-exec");
             success = r.exitCode === 0 && !r.timedOut;
         }
         else if (r.output.indexOf("Permission denied") >= 0) {
             const reprobe = await probeUser(env);
             if (reprobe.user && reprobe.user !== user) {
                 user = reprobe.user;
-                r = await runShell(buildCmd(), Math.max(timeoutMs + 10000, 20000));
+                r = await runShell(await buildCmd(), Math.max(timeoutMs + 10000, 20000), "ssh-exec");
                 success = r.exitCode === 0 && !r.timedOut;
             }
         }
@@ -891,8 +1293,26 @@ async function huaweiDevExec(params) {
         exitCode: r.exitCode,
         timedOut: r.timedOut,
         output: r.output,
-        error: success ? "" : `exit=${r.exitCode}`
+        error: success ? "" : `exit=${r.exitCode}`,
+        failReason: success ? "" : buildExecFailReason(r, success)
     });
+}
+/** exec 失败原因归类 */
+function buildExecFailReason(r, recovered) {
+    const out = r.output || "";
+    if (r.timedOut)
+        return "命令执行超时：可加大 timeout_ms 或检查命令是否交互式阻塞";
+    if (out.indexOf("Connection refused") >= 0)
+        return "隧道端口拒绝连接：隧道已尝试自动重建，若仍失败请调用 huawei_dev_connect";
+    if (out.indexOf("Connection timed out") >= 0 || out.indexOf("kex_exchange_identification") >= 0)
+        return "SSH 连接超时：隧道疑似僵死已自动重建，重试仍失败请 huawei_dev_connect";
+    if (out.indexOf("Permission denied") >= 0)
+        return "SSH 登录被拒：密钥失配，建议重新 connect（会自动探测用户/启用root）";
+    if (out.indexOf("REMOTE HOST IDENTIFICATION HAS CHANGED") >= 0)
+        return "远端主机指纹变化：已自动清理 known_hosts 并重试";
+    if (r.exitCode !== 0)
+        return `命令执行失败（exit=${r.exitCode}）：命令本身返回非零，详见 output`;
+    return recovered ? "" : out.slice(-200);
 }
 /**
  * enable_root 内部实现：
@@ -953,10 +1373,11 @@ async function enableRootInternal(env, workingUser) {
         `${SUDO_PREFIX}bash /tmp/.hds_enable_root.sh`,
         "rm -f /tmp/.hds_enable_root.sh"
     ].join("; ");
-    const cmdParts = [...sshBaseArgs(identityPath, knownHosts)];
+    const { args } = await sshBaseArgsFor(env.id);
+    const cmdParts = [...args];
     cmdParts.push(`${workingUser}@127.0.0.1`);
     cmdParts.push(`'${remoteScript.replace(/'/g, `'\\''`)}'`);
-    const r = await runShell(cmdParts.join(" "), 45000);
+    const r = await runShell(cmdParts.join(" "), 45000, "ssh-exec");
     const ok = r.output.indexOf("__ENABLE_ROOT_DONE__") >= 0;
     if (!ok) {
         if (r.output.indexOf("a password is required") >= 0 || r.output.indexOf("sudo:") >= 0) {
@@ -988,7 +1409,10 @@ async function huaweiDevEnableRoot(params) {
         success: result.success,
         workingUser,
         envId: env.id,
-        steps: result.steps
+        steps: result.steps,
+        failReason: result.success ? "" : (result.steps.join(" | ").indexOf("sudo needs password") >= 0
+            ? "当前登录用户无免密 sudo 权限，无法自动注入 root 公钥；请用 root 用户连接后重试"
+            : `root 启用失败：${result.steps.slice(-3).join(" | ").slice(-200)}`)
     });
 }
 async function huaweiDevConfig(params) {
@@ -1034,7 +1458,15 @@ async function huaweiDevConfig(params) {
         verified,
         keyringOk,
         hint: "凭据存储在 Linux 密钥环中，重启后仍有效；如需再次更换随时调用本工具",
-        error
+        error,
+        failReason: (success && verified !== false) ? "" : (
+            error.indexOf("rejected by Huawei Cloud") >= 0
+                ? "AK/SK 被华为云拒绝：凭据无效或已停用，请到 IAM 控制台核对"
+                : !keyringOk
+                    ? "密钥环不可用：请先在终端执行 hds-env-setup.sh"
+                    : verified === false
+                        ? `凭据已保存但验证失败：${error}`
+                        : error)
     });
 }
 async function huaweiDevShell(params) {
@@ -1043,15 +1475,16 @@ async function huaweiDevShell(params) {
         throw new Error("tunnel not running, call huawei_dev_connect first");
     }
     const env = await resolveTarget({});
-    const identityPath = `${IDENTITY_DIR}/${env.id}`;
-    const knownHosts = `${KNOWN_HOSTS_DIR}/${env.id}`;
     const user = await getCurrentUser(env);
     if (!user)
         throw new Error("no working login user; run connect first");
-    const sshCmd = [...sshBaseArgs(identityPath, knownHosts)];
+    const { args } = await sshBaseArgsFor(env.id);
+    const sshCmd = [...args];
     sshCmd[0] = "ssh -t -o ConnectTimeout=10"; // 强制 TTY
     sshCmd.push(`${user}@127.0.0.1`);
-    const session = await Tools.System.terminal.create("huawei_devspace_ssh");
+    // 按环境隔离会话名，避免多环境/重复调用互相覆盖
+    const sessionName = `hds_shell_${env.id.slice(0, 8)}`;
+    const session = await Tools.System.terminal.create(sessionName);
     const sessionId = asText(session.sessionId);
     // 用 input 模拟键入而非 exec：交互式 ssh 不被 exec 超时杀掉
     await Tools.System.terminal.input(sessionId, { input: sshCmd.join(" ") });
@@ -1066,9 +1499,10 @@ async function huaweiDevShell(params) {
     return await persistToolResult("shell", {
         success: true,
         sessionId,
+        sessionName,
         user,
         envId: env.id,
-        hint: "后续用 terminal_input/terminal_screen 或 super_admin 终端工具与会话 'huawei_devspace_ssh' 交互",
+        hint: `后续用 terminal_input/terminal_screen 或 super_admin 终端工具与会话 '${sessionName}' 交互`,
         screen: asText(screen.content || screen.output || "")
     });
 }
@@ -1084,7 +1518,11 @@ const huaweiDevspaceTools = {
     huawei_dev_shell: huaweiDevShell,
     huawei_dev_enable_root: huaweiDevEnableRoot,
     huawei_dev_power: huaweiDevPower,
-    huawei_dev_keepalive: huaweiDevKeepalive
+    huawei_dev_keepalive: huaweiDevKeepalive,
+    huawei_dev_upload: huaweiDevUpload,
+    huawei_dev_download: huaweiDevDownload,
+    huawei_dev_logs: huaweiDevLogs,
+    huawei_dev_forward: huaweiDevForward
 };
 export default huaweiDevspaceTools;
 exports.huawei_dev_connect = huaweiDevConnect;
@@ -1097,3 +1535,7 @@ exports.huawei_dev_shell = huaweiDevShell;
 exports.huawei_dev_enable_root = huaweiDevEnableRoot;
 exports.huawei_dev_power = huaweiDevPower;
 exports.huawei_dev_keepalive = huaweiDevKeepalive;
+exports.huawei_dev_upload = huaweiDevUpload;
+exports.huawei_dev_download = huaweiDevDownload;
+exports.huawei_dev_logs = huaweiDevLogs;
+exports.huawei_dev_forward = huaweiDevForward;
