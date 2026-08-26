@@ -99,6 +99,16 @@ export default function Screen(ctx: ComposeDslContext): ComposeNode {
     const selectedId = selectedIdState[0];
     const setSelectedId = selectedIdState[1];
 
+    const configExpandedState = ctx.useState<boolean>("configExpanded", false);
+    const configExpanded = configExpandedState[0];
+    const setConfigExpanded = configExpandedState[1];
+    const akInputState = ctx.useState<string>("akInput", "");
+    const akInput = akInputState[0];
+    const setAkInput = akInputState[1];
+    const skInputState = ctx.useState<string>("skInput", "");
+    const skInput = skInputState[0];
+    const setSkInput = skInputState[1];
+
     async function callPackageTool(toolName: string, params: Record<string, unknown>): Promise<unknown> {
         try {
             return await ctx.callTool(`${PACKAGE_NAME}:${toolName}`, params);
@@ -285,6 +295,18 @@ export default function Screen(ctx: ComposeDslContext): ComposeNode {
             ctx.showToast("root SSH 已启用");
         } else {
             throw new Error(asText(result.steps && (result.steps as string[]).slice(-2).join(" | ")) || "启用失败");
+        }
+    });
+
+    const saveConfigAction = runAction("保存凭据", async () => {
+        if (!akInput || !skInput) throw new Error("请填写 AK 和 SK");
+        const result = parseRecord(await callPackageTool("huawei_dev_config", { ak: akInput, sk: skInput }));
+        if (result.success) {
+            setSkInput("");
+            ctx.showToast("AK/SK 已保存并验证通过");
+            setLog(`✓ 凭据已更新 · 存于密钥环`);
+        } else {
+            throw new Error(asText(result.failReason) || asText(result.error) || "配置失败");
         }
     });
 
@@ -599,6 +621,79 @@ export default function Screen(ctx: ComposeDslContext): ComposeNode {
                     ctx.UI.Row({ verticalAlignment: "center", horizontalArrangement: "center", spacing: 5 }, [
                         ctx.UI.Icon({ name: "admin_panel_settings", size: 16 }),
                         ctx.UI.Text({ text: "root" })
+                    ])
+                ])
+            ]),
+
+            // ===== AK/SK 凭据配置面板（可折叠） =====
+            configExpanded ? ctx.UI.Card(
+                {
+                    fillMaxWidth: true,
+                    shape: { cornerRadius: 12 },
+                    containerColor: "surface",
+                    elevation: 1,
+                    border: { width: 0.7, color: "outlineVariant", alpha: 0.4 }
+                },
+                [
+                    ctx.UI.Column({ padding: { horizontal: 10, vertical: 8 }, spacing: 8 }, [
+                        ctx.UI.Row({ verticalAlignment: "center", spacing: 6 }, [
+                            ctx.UI.Icon({ name: "key", tint: "primary", size: 16 }),
+                            ctx.UI.Text({ text: "AK/SK 凭据配置", style: "labelLarge", fontWeight: "bold" }),
+                            ctx.UI.Spacer({})
+                        ]),
+                        ctx.UI.TextField({
+                            label: "Access Key ID",
+                            placeholder: "输入 AK",
+                            value: akInput,
+                            onValueChange: (v) => setAkInput(v),
+                            singleLine: true
+                        } as any),
+                        ctx.UI.TextField({
+                            label: "Secret Access Key",
+                            placeholder: "输入 SK",
+                            value: skInput,
+                            onValueChange: (v) => setSkInput(v),
+                            singleLine: true,
+                            isPassword: true
+                        } as any),
+                        ctx.UI.Row({ spacing: 8, fillMaxWidth: true, verticalAlignment: "center" }, [
+                            ctx.UI.Button({
+                                weight: 1,
+                                enabled: !busy && !!akInput && !!skInput,
+                                onClick: saveConfigAction,
+                                shape: { cornerRadius: 10 }
+                            }, [ctx.UI.Text({ text: busy ? "验证中…" : "保存并验证", fontWeight: "bold" })])
+                        ]),
+                        ctx.UI.Text({
+                            text: "凭据仅存于 Linux 密钥环，不落盘明文",
+                            style: "labelSmall",
+                            color: "onSurfaceVariant"
+                        })
+                    ])
+                ]
+            ) : ctx.UI.Spacer({}),
+
+            // ===== 展开配置入口 =====
+            !configExpanded ? ctx.UI.Row({ fillMaxWidth: true, horizontalArrangement: "center" }, [
+                ctx.UI.FilledTonalButton({
+                    enabled: !busy,
+                    onClick: () => setConfigExpanded(true),
+                    shape: { cornerRadius: 10 }
+                }, [
+                    ctx.UI.Row({ verticalAlignment: "center", spacing: 5 }, [
+                        ctx.UI.Icon({ name: "key", size: 15 }),
+                        ctx.UI.Text({ text: "凭据配置", style: "labelLarge" })
+                    ])
+                ])
+            ]) : ctx.UI.Row({ fillMaxWidth: true, horizontalArrangement: "center" }, [
+                ctx.UI.FilledTonalButton({
+                    enabled: !busy,
+                    onClick: () => { setConfigExpanded(false); setSkInput(""); },
+                    shape: { cornerRadius: 10 }
+                }, [
+                    ctx.UI.Row({ verticalAlignment: "center", spacing: 5 }, [
+                        ctx.UI.Icon({ name: "expand_less", size: 15 }),
+                        ctx.UI.Text({ text: "收起配置", style: "labelLarge" })
                     ])
                 ])
             ]),
