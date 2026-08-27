@@ -44,8 +44,8 @@ export async function removeState(fileBase) {
 }
 
 // ==================== 端口池 ====================
-const PORT_POOL_START = 10022;
-const PORT_POOL_END = 10079;
+export const PORT_POOL_START = 10022;
+export const PORT_POOL_END = 10079;
 
 /** 列出所有已分配的端口映射 [{envId, port}] */
 export async function listAssignedPorts() {
