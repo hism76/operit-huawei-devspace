@@ -1,0 +1,22 @@
+# --- build outputs ---
+dist/
+pkgroot/
+*.toolpkg
+*.js.map
+
+# --- backups / temp ---
+*.bak
+src.bak*/
+*.toolpkg.bak
+*.log
+.DS_Store
+
+# --- secrets / credentials (never commit) ---
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+.ghtoken
+*_token*
