@@ -95,8 +95,10 @@ METADATA
         },
         {
             "name": "huawei_dev_keepalive",
-            "description": {"zh": "巡检全部隧道，僵死自愈。建议定时任务每5分钟调用。"},
-            "parameters": [],
+            "description": {"zh": "巡检全部隧道，僵死自愈。单轮有总时长预算，连续失败的环境自动冷却30分钟。建议定时任务每5分钟调用。"},
+            "parameters": [
+                {"name": "force", "description": {"zh": "忽略冷却强制巡检"}, "type": "boolean", "required": false}
+            ],
             "returns": true
         },
         {
@@ -141,7 +143,7 @@ METADATA
 }
 */
 Object.defineProperty(exports, "__esModule", { value: true });
-const PACKAGE_VERSION = "0.2.3";
+const PACKAGE_VERSION = "0.2.4";
 async function ensureCli() {
     const check = await runShell(`test -x ${CLI_PATH} && echo CLI_OK || echo CLI_MISSING`, 8000);
     if (check.output.indexOf("CLI_OK") >= 0)
@@ -161,7 +163,8 @@ import { asText, firstNonBlank, firstLine, runShell } from "./core/shell";
 import {
     CLI_PATH, CLI_SOURCE, TUNNEL_PORT, REMOTE_SSH_PORT, DBUS_ADDRESS,
     ENV_SETUP_SCRIPT, CONNECT_TIMEOUT_MS, POLL_INTERVAL_MS,
-    STATE_DIR, readState, writeState, listAssignedPorts, getEnvPort
+    STATE_DIR, readState, writeState, listAssignedPorts, getEnvPort,
+    IDENTITY_DIR, KNOWN_HOSTS_DIR, PORT_POOL_START, PORT_POOL_END
 } from "./core/state";
 import {
     getAliveTunnelIds, isTunnelAliveFor, isTunnelAlive, killTunnel,
@@ -409,6 +412,10 @@ async function huaweiDevConnect(params) {
     }
     const success = !!user;
     invalidateStatusCache();
+    if (success) {
+        await clearFailState(env.id);
+        await markLastOk(env.id);
+    }
     const detail = {
         success,
         keyringOk,
@@ -583,9 +590,48 @@ async function getLastOk() {
     const v = await readState("hds-last-ok-ts");
     return Number(v) > 0 ? Number(v) : 0;
 }
+/** 仅读缓存的登录用户（轻量，不触发 SSH 探测/key-reset） */
+async function getCachedUser(envId) {
+    const fromEnv = firstNonBlank(asText(getEnv("HUAWEI_DEV_USER")), "");
+    if (fromEnv)
+        return fromEnv;
+    return await readState(`hds-ssh-user-${envId}`);
+}
+/** 轻量用户解析器：供 status/keepalive 的 sshEchoProbe 使用，避免昂贵的 probeUser 链 */
+async function cachedUserResolver(envLike) {
+    return await getCachedUser(envLike && envLike.id ? envLike.id : "");
+}
+// ==================== keepalive 防风暴护栏 ====================
+const KEEPALIVE_BUDGET_MS = 240000;      // 单轮总预算，超时立即收尾
+const KEEPALIVE_COOLDOWN_MS = 1800000;   // 连续失败进入冷却，30 分钟内不再重建
+const KEEPALIVE_FAIL_LIMIT = 2;          // 连续失败次数阈值
+
+async function readFailState(envId) {
+    const raw = await readState(`hds-fail-${envId}`);
+    const m = asText(raw).trim().match(/^(\d+):(\d+)$/);
+    if (!m)
+        return { count: 0, ts: 0 };
+    return { count: Number(m[1]), ts: Number(m[2]) };
+}
+async function bumpFailState(envId) {
+    const cur = await readFailState(envId);
+    await writeState(`hds-fail-${envId}`, `${cur.count + 1}:${Date.now()}`);
+}
+async function clearFailState(envId) {
+    await runShell(`rm -f ${STATE_DIR}/hds-fail-${envId}`, 5000, "state-mgr");
+}
+/** 冷却判定：连续失败达阈值且仍在冷却窗口内 */
+async function inCooldown(envId) {
+    const f = await readFailState(envId);
+    if (f.count < KEEPALIVE_FAIL_LIMIT)
+        return 0;
+    const left = KEEPALIVE_COOLDOWN_MS - (Date.now() - f.ts);
+    return left > 0 ? left : 0;
+}
 /** keepalive 工具实现：真实探测 + 僵死自愈（多环境并行版） */
 async function huaweiDevKeepalive(params) {
-    void params;
+    const force = !!(params && params.force);
+    const deadline = Date.now() + KEEPALIVE_BUDGET_MS;
     const steps = [];
     // 收集需要保活的环境：登记过的 + 存活隧道的
     const keepEnvs = await listAutoKeepEnvs();
@@ -602,33 +648,77 @@ async function huaweiDevKeepalive(params) {
     let allOk = true;
     const results = [];
     for (const envId of targets) {
+        // 预算耗尽：不再启动新的重建，直接收尾（防止上一轮未完下一轮又来造成排队风暴）
+        if (Date.now() >= deadline) {
+            steps.push(`[${envId.slice(0, 8)}] skipped: keepalive budget exhausted`);
+            results.push({ envId, ok: false, action: "skipped_budget" });
+            continue;
+        }
+        const cooldownLeft = force ? 0 : await inCooldown(envId);
+        if (cooldownLeft > 0) {
+            steps.push(`[${envId.slice(0, 8)}] skipped: in cooldown ${Math.round(cooldownLeft / 60000)}min (force=true 可强制)`);
+            results.push({ envId, ok: false, action: "skipped_cooldown", cooldownLeftMs: cooldownLeft });
+            continue;
+        }
         const port = await getEnvPort(envId);
+        // 隧道状态检查前，先看环境是否在运行：Ready/Stopped 环境无法建隧道，不浪费重建配额
+        try {
+            const envsNow = await listEnvs(30000);
+            const cur = envsNow.find(e => e.id === envId);
+            if (cur && cur.state !== "Running") {
+                steps.push(`[${envId.slice(0, 8)}] env state=${cur.state} (not Running); skip tunnel revive`);
+                results.push({ envId, ok: false, action: "skipped_env_not_running", envState: cur.state });
+                continue;
+            }
+        }
+        catch (e) {
+            steps.push(`[${envId.slice(0, 8)}] env state lookup failed (${asText(e.message).slice(0, 60)}); proceeding with tunnel check`);
+        }
         if (!(await isTunnelAliveFor(envId))) {
             steps.push(`[${envId.slice(0, 8)}] tunnel DOWN, reviving @${port}...`);
             const t = await startTunnelWithRetry(envId, port);
             steps.push(...t.attempts.map(a => `[${envId.slice(0, 8)}] ${a}`));
             if (!t.ok) {
                 allOk = false;
+                await bumpFailState(envId);
                 results.push({ envId, ok: false, action: "revive_failed" });
                 continue;
             }
         }
-        const probe = await sshEchoProbe(envId, "");
+        const probe = await sshEchoProbe(envId, "", cachedUserResolver);
         steps.push(`[${envId.slice(0, 8)}] ssh echo ${probe.ok ? `OK as ${probe.user}` : `FAILED (${probe.reason})`} @${port}`);
         if (!probe.ok) {
+            // 无缓存用户时不要判定为僵死（会误杀健康隧道），先做一次完整用户探测
+            if (!probe.user) {
+                steps.push(`[${envId.slice(0, 8)}] no cached user; probing login user once...`);
+                const p = await probeUser({ id: envId, num: "", name: "", state: "", type: "container" });
+                if (p.user) {
+                    const re = await sshEchoProbe(envId, p.user);
+                    steps.push(`[${envId.slice(0, 8)}] probe-then-echo ${re.ok ? `OK as ${p.user}` : "FAILED"}`);
+                    if (re.ok) {
+                        await clearFailState(envId);
+                        await markLastOk(envId);
+                        results.push({ envId, ok: true, action: "verified", user: p.user });
+                        continue;
+                    }
+                }
+            }
             steps.push(`[${envId.slice(0, 8)}] zombie detected; rebuilding...`);
             const t = await startTunnelWithRetry(envId, port);
             steps.push(...t.attempts.map(a => `[${envId.slice(0, 8)}] ${a}`));
-            const reprobe = await sshEchoProbe(envId, probe.user || "");
+            const reprobe = await sshEchoProbe(envId, probe.user || "", cachedUserResolver);
             steps.push(`[${envId.slice(0, 8)}] re-verify ${reprobe.ok ? "OK" : "FAILED"}`);
             if (!reprobe.ok) {
                 allOk = false;
+                await bumpFailState(envId);
                 results.push({ envId, ok: false, action: "zombie_rebuild_failed" });
                 continue;
             }
+            await clearFailState(envId);
             results.push({ envId, ok: true, action: "rebuilt", user: reprobe.user });
         }
         else {
+            await clearFailState(envId);
             await markLastOk(envId);
             results.push({ envId, ok: true, action: "verified", user: probe.user });
         }
@@ -648,10 +738,10 @@ async function huaweiDevUpload(params) {
     const remotePath = asText(params?.remote_path).trim();
     if (!localPath || !remotePath)
         throw new Error("local_path and remote_path are required");
-    if (!(await isTunnelAlive())) {
-        throw new Error("tunnel not running, call huawei_dev_connect first");
-    }
     const env = await resolveTarget({});
+    if (!(await isTunnelAliveFor(env.id))) {
+        throw new Error(`tunnel not running for ${env.name} #${env.num}; call huawei_dev_connect first`);
+    }
     const port = await getEnvPort(env.id);
     let user = await getCurrentUser(env);
     if (!user)
@@ -708,10 +798,10 @@ async function huaweiDevDownload(params) {
     const localPath = asText(params?.local_path).trim();
     if (!remotePath || !localPath)
         throw new Error("remote_path and local_path are required");
-    if (!(await isTunnelAlive())) {
-        throw new Error("tunnel not running, call huawei_dev_connect first");
-    }
     const env = await resolveTarget({});
+    if (!(await isTunnelAliveFor(env.id))) {
+        throw new Error(`tunnel not running for ${env.name} #${env.num}; call huawei_dev_connect first`);
+    }
     const port = await getEnvPort(env.id);
     let user = await getCurrentUser(env);
     if (!user)
@@ -804,9 +894,10 @@ async function huaweiDevForward(params) {
     }
     // 列出当前所有转发
     if (action === "list") {
-        const r = await runShell(`pgrep -af 'ssh.*-L.*${PORT_POOL_END}' 2>/dev/null; pgrep -af 'socat TCP-LISTEN' 2>/dev/null; true`, 8000, "fwd-mgr");
+        const r = await runShell(`pgrep -af 'ssh .*-L [0-9]' 2>/dev/null; pgrep -af 'socat TCP-LISTEN' 2>/dev/null; true`, 8000, "fwd-mgr");
         return await persistToolResult("forward", {
             success: true,
+            portPool: `${PORT_POOL_START}-${PORT_POOL_END}`,
             forwards: r.output.trim().split("\n").filter(l => l.indexOf("-L") >= 0 || l.indexOf("TCP-LISTEN") >= 0),
             hint: "每条形如: ssh ... -L local:host:port user@..."
         });
@@ -815,10 +906,10 @@ async function huaweiDevForward(params) {
         throw new Error("local_port must be 1024-65535");
     if (action !== "stop" && (!remotePort || remotePort < 1 || remotePort > 65535))
         throw new Error("remote_port must be 1-65535");
-    if (!(await isTunnelAlive())) {
-        throw new Error("tunnel not running, call huawei_dev_connect first");
-    }
     const env = await resolveTarget({});
+    if (!(await isTunnelAliveFor(env.id))) {
+        throw new Error(`tunnel not running for ${env.name} #${env.num}; call huawei_dev_connect first`);
+    }
     const { args } = await sshBaseArgsFor(env.id);
     const user = await getCurrentUser(env);
     if (!user)
@@ -837,7 +928,7 @@ async function huaweiDevForward(params) {
     // start：setsid 后台启动 ssh -N -L
     const fwdArgs = [...args];
     fwdArgs[0] = "ssh -N";
-    const fwdCmd = `DBUS_SESSION_BUS_ADDRESS=\${DBUS_ADDRESS} setsid nohup ${fwdArgs.join(" ")} -L ${localPort}:${remoteHost}:${remotePort} ${user}@127.0.0.1 > /tmp/hds-forward-${localPort}.log 2>&1 < /dev/null & sleep 0.3; echo FWD_PID=$!`;
+    const fwdCmd = `DBUS_SESSION_BUS_ADDRESS=${DBUS_ADDRESS} setsid nohup ${fwdArgs.join(" ")} -L ${localPort}:${remoteHost}:${remotePort} ${user}@127.0.0.1 > /tmp/hds-forward-${localPort}.log 2>&1 < /dev/null & sleep 0.3; echo FWD_PID=$!`;
     const launch = await runShell(fwdCmd, 12000, "fwd-mgr");
     await new Promise(res => setTimeout(res, 2500));
     const opened = await waitPortOpenOnce(localPort);
@@ -884,8 +975,17 @@ async function huaweiDevDisconnect(params) {
     // 杀指定环境的隧道；未指定目标时杀全部（显式断开语义）
     const killed = targetId ? await killTunnel(targetId) : await killTunnel();
     steps.push(killed ? `tunnel killed${targetId ? ` (${targetId.slice(0, 8)})` : ""}` : "tunnel already dead");
-    if (targetId)
+    if (targetId) {
         await unmarkAutoKeep(targetId);
+    }
+    else {
+        // 全断语义：清空所有保活登记，否则 keepalive 会立即复活刚断开的隧道
+        const allKeep = await listAutoKeepEnvs();
+        for (const kid of allKeep)
+            await unmarkAutoKeep(kid);
+        await runShell(`rm -f ${STATE_DIR}/hds-fail-* 2>/dev/null; true`, 5000, "state-mgr");
+        steps.push(`keepalive markers cleared (${allKeep.length} envs unregistered from auto-keep)`);
+    }
     let stopped = "";
     if (stopEnv) {
         if (!targetId) {
@@ -940,7 +1040,7 @@ async function huaweiDevStatus(params) {
         const portOpen = tunnelAlive ? await waitPortOpenOnce(a.port) : false;
         let user = "";
         if (tunnelAlive && portOpen) {
-            const probe = await sshEchoProbe(a.envId, "");
+            const probe = await sshEchoProbe(a.envId, "", cachedUserResolver);
             user = probe.ok ? (probe.user || "") : "";
         }
         // 环境名从缓存/列表补齐
@@ -958,7 +1058,7 @@ async function huaweiDevStatus(params) {
     steps.push(`active tunnels: ${connections.filter(c => c.tunnelAlive).length}/${assigned.length} registered`);
     // ===== 当前环境详情（兼容旧字段）=====
     const alive = await isTunnelAlive();
-    const currentTarget = (await getAliveTunnelIds())[0] || (await readState("hds-current-env")) || "";
+    const currentTarget = (await readState("hds-current-env")) || (await getAliveTunnelIds())[0] || "";
     let port = 0;
     let portOpen = false;
     if (currentTarget) {
@@ -967,7 +1067,7 @@ async function huaweiDevStatus(params) {
             portOpen = await waitPortOpenOnce(port);
     }
     else {
-        port = TUNNEL_PORT;
+        port = 0; // 无活动环境，端口无意义
     }
     steps.push(`current: ${currentTarget.slice(0, 8)} @${port} ${portOpen ? "OPEN" : "CLOSED"}`);
     let envState = "unknown";
@@ -987,7 +1087,7 @@ async function huaweiDevStatus(params) {
     let user = "";
     let sshOk = false;
     if (alive && portOpen && envId) {
-        user = await readState(`hds-ssh-user-${envId}`);
+        user = await getCachedUser(envId);
         if (user) {
             const check = await trySshAs(envId, user);
             sshOk = check.ok;
@@ -995,10 +1095,9 @@ async function huaweiDevStatus(params) {
             if (!sshOk)
                 user = "";
         }
-        if (!user) {
-            const probe = await probeUser({ id: envId, num: "", name: envName, state: envState, type: envType });
-            user = probe.user;
-            sshOk = !!user;
+        else {
+            // status 是只读查询：不在这里跑 probeUser（会触发 ssh-key-reset，最长 90s+，导致 UI 卡"加载中"）
+            steps.push("no cached ssh user; skip heavy probe (run connect to establish)");
         }
     }
     const statusResult = await persistToolResult("status", {
@@ -1039,10 +1138,10 @@ async function huaweiDevExec(params) {
     if (!command)
         throw new Error("command cannot be empty");
     const timeoutMs = params?.timeout_ms != null ? Number(params.timeout_ms) : 30000;
-    if (!(await isTunnelAlive())) {
-        throw new Error("tunnel not running, call huawei_dev_connect first");
-    }
     const env = await resolveTarget({});
+    if (!(await isTunnelAliveFor(env.id))) {
+        throw new Error(`tunnel not running for ${env.name} #${env.num}; call huawei_dev_connect first`);
+    }
     const port = await getEnvPort(env.id);
     let user = await getCurrentUser(env);
     if (!user)
@@ -1186,10 +1285,10 @@ async function enableRootInternal(env, workingUser) {
 }
 async function huaweiDevEnableRoot(params) {
     void params;
-    if (!(await isTunnelAlive())) {
-        throw new Error("tunnel not running, call huawei_dev_connect first");
-    }
     const env = await resolveTarget({});
+    if (!(await isTunnelAliveFor(env.id))) {
+        throw new Error(`tunnel not running for ${env.name} #${env.num}; call huawei_dev_connect first`);
+    }
     const workingUser = await getCurrentUser(env);
     if (!workingUser)
         throw new Error("no working login user; run connect first");
@@ -1260,10 +1359,10 @@ async function huaweiDevConfig(params) {
 }
 async function huaweiDevShell(params) {
     const input = asText(params?.input).trim();
-    if (!(await isTunnelAlive())) {
-        throw new Error("tunnel not running, call huawei_dev_connect first");
-    }
     const env = await resolveTarget({});
+    if (!(await isTunnelAliveFor(env.id))) {
+        throw new Error(`tunnel not running for ${env.name} #${env.num}; call huawei_dev_connect first`);
+    }
     const user = await getCurrentUser(env);
     if (!user)
         throw new Error("no working login user; run connect first");
