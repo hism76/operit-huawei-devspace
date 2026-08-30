@@ -169,7 +169,7 @@ import {
 import {
     getAliveTunnelIds, isTunnelAliveFor, isTunnelAlive, killTunnel,
     startTunnelWithRetry, markAutoKeep, unmarkAutoKeep, listAutoKeepEnvs,
-    waitPortOpenOnce
+    waitPortOpenOnce, ensureSupervisor
 } from "./core/tunnel";
 import {
     sshBaseArgsFor, healKnownHosts, trySshAs, probeUser, sshEchoProbe
@@ -387,6 +387,9 @@ async function huaweiDevConnect(params) {
     }
     // 登记自动保活 + 记录当前选择 + 缓存环境名
     await markAutoKeep(env.id);
+    // 常驻守护：部署+启动（幂等），15s 自愈取代人工巡检
+    const sup = await ensureSupervisor();
+    steps.push(`supervisor: ${sup ? "OK" : "FAILED"}`);
     await writeState('hds-current-env', env.id);
     await writeState(`hds-name-${env.id}`, `${env.name} #${env.num}`);
     // 步骤3：探测登录用户并验证
@@ -633,6 +636,8 @@ async function huaweiDevKeepalive(params) {
     const force = !!(params && params.force);
     const deadline = Date.now() + KEEPALIVE_BUDGET_MS;
     const steps = [];
+    // 守护已常驻：这里确保它仍活着（进程被终端重启等情况），并同步脚本版本
+    await ensureSupervisor();
     // 收集需要保活的环境：登记过的 + 存活隧道的
     const keepEnvs = await listAutoKeepEnvs();
     const aliveIds = await getAliveTunnelIds();
@@ -1156,7 +1161,7 @@ async function huaweiDevExec(params) {
     };
     let r = await runShell(await buildCmd(), Math.max(timeoutMs + 10000, 20000), "ssh-exec");
     let success = r.exitCode === 0 && !r.timedOut;
-    // 隧道自愈：半开/端口死 → 重建后重试一次（用户无感）
+    // 隧道自愈：半开/端口死/进程崩溃 → 立即重建并重试（用户无感）
     const tunnelDead = !success
         && (r.output.indexOf("Connection refused") >= 0
             || r.output.indexOf("Connection timed out") >= 0
@@ -1164,6 +1169,17 @@ async function huaweiDevExec(params) {
     if (tunnelDead) {
         const t = await startTunnelWithRetry(env.id, port);
         if (t.ok) {
+            r = await runShell(await buildCmd(), Math.max(timeoutMs + 10000, 20000), "ssh-exec");
+            success = r.exitCode === 0 && !r.timedOut;
+            if (success)
+                await markLastOk(env.id);
+        }
+    }
+    // 二次自愈：第一次重建失败，稍等片刻（隧道 server 端状态收敛）再试一轮
+    if (!success && tunnelDead) {
+        await new Promise(res => setTimeout(res, 3000));
+        const t2 = await startTunnelWithRetry(env.id, port);
+        if (t2.ok) {
             r = await runShell(await buildCmd(), Math.max(timeoutMs + 10000, 20000), "ssh-exec");
             success = r.exitCode === 0 && !r.timedOut;
             if (success)

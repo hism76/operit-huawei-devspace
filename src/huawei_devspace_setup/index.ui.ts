@@ -109,28 +109,11 @@ export default function Screen(ctx: ComposeDslContext): ComposeNode {
     const skInput = skInputState[0];
     const setSkInput = skInputState[1];
 
-    const loadErrState = ctx.useState<string>("loadErr", "");
-    const loadErr = loadErrState[0];
-    const setLoadErr = loadErrState[1];
-
-    /** 工具调用统一超时护栏：避免后端排队/挂起导致界面永久“加载中” */
-    async function callPackageTool(toolName: string, params: Record<string, unknown>, timeoutMs?: number): Promise<unknown> {
-        const limit = timeoutMs && timeoutMs > 0 ? timeoutMs : 90000;
-        let timer: any = null;
+    async function callPackageTool(toolName: string, params: Record<string, unknown>): Promise<unknown> {
         try {
-            return await Promise.race([
-                ctx.callTool(`${PACKAGE_NAME}:${toolName}`, params),
-                new Promise((_resolve, reject) => {
-                    timer = setTimeout(
-                        () => reject(new Error(`${toolName} 超时 ${Math.round(limit / 1000)}s（后端可能仍在排队，稍后重试）`)),
-                        limit
-                    );
-                })
-            ]);
+            return await ctx.callTool(`${PACKAGE_NAME}:${toolName}`, params);
         } catch (e) {
             throw new Error(asText((e as Error).message) || `tool call failed: ${toolName}`);
-        } finally {
-            if (timer) clearTimeout(timer);
         }
     }
 
@@ -206,54 +189,9 @@ export default function Screen(ctx: ComposeDslContext): ComposeNode {
         }
     };
 
-    /** 首屏/重试加载：任何失败都要退出“加载中”态并显示原因 */
-    const bootstrap = async (): Promise<void> => {
-        setLoadErr("");
-        let listOk = false;
-        try {
-            const listResult = parseRecord(await callPackageTool("huawei_dev_list", {}, 60000));
-            const list: EnvItem[] = Array.isArray(listResult.envs)
-                ? (listResult.envs as any[]).map((e: any) => ({
-                    num: asText(e.num),
-                    id: asText(e.id),
-                    name: asText(e.name),
-                    state: asText(e.state),
-                    type: asText(e.type)
-                }))
-                : [];
-            setEnvs(list);
-            listOk = true;
-        } catch (e) {
-            setLoadErr(`环境列表加载失败：${asText((e as Error).message).slice(0, 120)}`);
-        }
-        try {
-            await refreshStatus();
-        } catch (e) {
-            const msg = asText((e as Error).message).slice(0, 120);
-            setLoadErr(listOk ? `状态加载失败：${msg}` : `加载失败：${msg}`);
-            // 关键：即使 status 失败也写入占位对象，否则界面永远停在“加载中...”
-            setStatus({
-                connected: false,
-                tunnelAlive: false,
-                tunnelTarget: "",
-                portOpen: false,
-                sshOk: false,
-                user: "",
-                envState: "",
-                envName: "",
-                envId: "",
-                envType: "",
-                port: 0,
-                connections: []
-            });
-        }
-    };
-
-    const retryLoadAction = runAction("重试加载", bootstrap, { readOnly: true });
-
     const connectToSelected = runAction("连接", async () => {
         if (!selectedId) throw new Error("请先在列表中选择一个环境");
-        await callPackageTool("huawei_dev_connect", { id: selectedId }, 300000);
+        await callPackageTool("huawei_dev_connect", { id: selectedId });
         await refreshAllSilent();
         ctx.showToast("连接已建立");
     });
@@ -272,7 +210,7 @@ export default function Screen(ctx: ComposeDslContext): ComposeNode {
 
     /** 按环境直连/断开（列表行内按钮用） */
     const connectEnv = (envId: string) => runAction("连接", async () => {
-        await callPackageTool("huawei_dev_connect", { id: envId }, 300000);
+        await callPackageTool("huawei_dev_connect", { id: envId });
         await refreshAllSilent();
         ctx.showToast("连接已建立");
     })();
@@ -284,8 +222,7 @@ export default function Screen(ctx: ComposeDslContext): ComposeNode {
     })();
 
     const keepaliveAllAction = runAction("全部保活", async () => {
-        // 保活是重操作：走 busy 互斥，避免连点造成后端排队风暴
-        const result = parseRecord(await callPackageTool("huawei_dev_keepalive", {}, 280000));
+        const result = parseRecord(await callPackageTool("huawei_dev_keepalive", {}));
         await refreshAllSilent();
         const checked = Number(result.checked) || 0;
         if (result.success) {
@@ -294,7 +231,7 @@ export default function Screen(ctx: ComposeDslContext): ComposeNode {
         } else {
             throw new Error(`保活部分失败：${asText(result.steps && (result.steps as string[]).slice(-2).join(" | "))}`);
         }
-    });
+    }, { readOnly: true });
 
     const powerOnAction = runAction("开机", async () => {
         if (!selectedId) throw new Error("请先选择环境");
@@ -459,7 +396,20 @@ export default function Screen(ctx: ComposeDslContext): ComposeNode {
         {
             onLoad: async () => {
                 if (!status) {
-                    await bootstrap();
+                    try {
+                        const listResult = parseRecord(await callPackageTool("huawei_dev_list", {}));
+                        const list: EnvItem[] = Array.isArray(listResult.envs)
+                            ? (listResult.envs as any[]).map((e: any) => ({
+                                num: asText(e.num),
+                                id: asText(e.id),
+                                name: asText(e.name),
+                                state: asText(e.state),
+                                type: asText(e.type)
+                            }))
+                            : [];
+                        setEnvs(list);
+                        await refreshStatus();
+                    } catch { /* ignore */ }
                 }
             },
             fillMaxSize: true,
@@ -485,7 +435,7 @@ export default function Screen(ctx: ComposeDslContext): ComposeNode {
                         ctx.UI.Column({ weight: 1, spacing: 0 }, [
                             ctx.UI.Row({ verticalAlignment: "center", spacing: 6 }, [
                                 ctx.UI.Text({ text: "华为云开发空间", style: "titleMedium", fontWeight: "bold" }),
-                                ctx.UI.Text({ text: "v0.2.4", style: "labelSmall", color: "onSurfaceVariant" })
+                                ctx.UI.Text({ text: "v0.2.3", style: "labelSmall", color: "onSurfaceVariant" })
                             ]),
                             ctx.UI.Text(
                                 {
@@ -499,28 +449,6 @@ export default function Screen(ctx: ComposeDslContext): ComposeNode {
                     ]
                 );
             })(),
-
-            // ===== 加载错误 + 重试 =====
-            loadErr ? ctx.UI.Surface(
-                {
-                    fillMaxWidth: true,
-                    shape: { cornerRadius: 10 },
-                    containerColor: "#FFF3E0"
-                },
-                [
-                    ctx.UI.Row({ padding: { horizontal: 10, vertical: 8 }, fillMaxWidth: true, verticalAlignment: "center", spacing: 8 }, [
-                        ctx.UI.Icon({ name: "warning_amber", size: 16, tint: "#E65100" }),
-                        ctx.UI.Column({ weight: 1, spacing: 0 }, [
-                            ctx.UI.Text({ text: loadErr, style: "bodySmall", color: "#E65100", maxLines: 3 })
-                        ]),
-                        ctx.UI.FilledTonalButton({
-                            enabled: true,
-                            onClick: retryLoadAction,
-                            shape: { cornerRadius: 10 }
-                        }, [ctx.UI.Text({ text: "重试", style: "labelMedium" })])
-                    ])
-                ]
-            ) : ctx.UI.Spacer({}),
 
             // ===== 当前目标信息条 =====
             status ? ctx.UI.Surface(
@@ -545,7 +473,7 @@ export default function Screen(ctx: ComposeDslContext): ComposeNode {
                             ctx.UI.Text({ text: stateLabel(status.envState), style: "labelMedium", color: stateHex(status.envState), fontWeight: "bold" }),
                             ctx.UI.Spacer({}),
                             ...(status.sshOk ? [ctx.UI.Icon({ name: "check_circle", size: 16, tint: "#4CAF50" }), ctx.UI.Spacer({ width: 4 }), ctx.UI.Text({ text: `SSH ${status.user}`, style: "labelSmall", color: "#4CAF50" })] : []),
-                            ...(status.portOpen ? [ctx.UI.Icon({ name: "swap_horiz", size: 16, tint: "#FF9800" }), ctx.UI.Text({ text: `:${status.port}`, style: "labelSmall", color: "#FF9800" })] : [])
+                            ...(status.portOpen ? [ctx.UI.Icon({ name: "swap_horiz", size: 16, tint: "#FF9800" }), ctx.UI.Text({ text: ":10022", style: "labelSmall", color: "#FF9800" })] : [])
                         ]
                     )
                 ]
@@ -584,7 +512,7 @@ export default function Screen(ctx: ComposeDslContext): ComposeNode {
                 ctx.UI.FilledTonalButton(
                     {
                         weight: 1,
-                        enabled: !busy,
+                        enabled: true,
                         onClick: keepaliveAllAction,
                         shape: { cornerRadius: 12 }
                     },

@@ -16,6 +16,9 @@ export async function sshBaseArgsFor(envId, port) {
             "-o StrictHostKeyChecking=no",
             `-o UserKnownHostsFile=${KNOWN_HOSTS_DIR}/${envId}`,
             `-i ${IDENTITY_DIR}/${envId}`,
+            `-o ServerAliveInterval=30`,
+            `-o ServerAliveCountMax=3`,
+            `-o TCPKeepAlive=yes`,
             `-p ${p}`
         ],
         port: p

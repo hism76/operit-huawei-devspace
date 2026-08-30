@@ -58,8 +58,7 @@ export async function waitPortOpenOnce(port) {
 async function trimTunnelLogs() {
     await runShell(`for f in /tmp/hds-tunnel-*.log; do [ -f "$f" ] && [ "$(wc -c < "$f")" -gt 262144 ] && tail -c 65536 "$f" > "$f.tmp" && mv "$f.tmp" "$f"; done 2>/dev/null; true`, 8000, "log-maint");
 }
-
-/** 启动隧道并等待端口开放；失败自动重启重试（hdspace 偶发 success 后自退） */
+/** 启动隧道并等待端口开放；失败自动重启重试（hdspace 偶发 success 后自退/崩溃） */
 export async function startTunnelWithRetry(envId, port) {
     const attempts = [];
     await trimTunnelLogs();
@@ -78,8 +77,12 @@ export async function startTunnelWithRetry(envId, port) {
             attempts.push(`process#${attempt}: exited unexpectedly`);
             continue;
         }
-        const log = await runShell(`tail -5 /tmp/hds-tunnel-${envId}.log 2>/dev/null`, 8000, "log-maint");
-        attempts.push(`log#${attempt}: ${firstLine(log.output).slice(0, 120)}`);
+        // 抖动退避：连续失败时指数退避，避开 server 端状态收敛窗口
+        if (attempt < TUNNEL_RESTART_RETRIES) {
+            const backoff = 1000 * Math.pow(2, attempt - 1);
+            attempts.push(`backoff#${attempt}: ${backoff}ms`);
+            await new Promise(res => setTimeout(res, backoff));
+        }
     }
     return { ok: false, attempts };
 }
@@ -97,4 +100,25 @@ export async function unmarkAutoKeep(envId) {
 export async function listAutoKeepEnvs() {
     const r = await runShell(`ls ${STATE_DIR}/hds-keep-* 2>/dev/null | sed 's|.*/hds-keep-||'`, 8000, "state-mgr");
     return r.output.split("\n").map(s => s.trim()).filter(id => /^[0-9a-f]{32}$/.test(id));
+}
+
+// ==================== 常驻隧道守护 (supervisor) ====================
+// 脚本职责：每 15s 巡查 auto-keep 名单里的环境；进程死即拉、半开即杀重拉。
+// 连续 3 次徒劳拉起 -> 该环境冷却 10 分钟，避免对未开机的 Ready 环境刷 API。
+const SUPERVISOR_B64 = "IyEvYmluL2Jhc2gKIyBoZHMtc3VwZXJ2aXNvciB2NCAtIGh1YXdlaSBjbG91ZCB0dW5uZWwgd2F0Y2hkb2cKIyAxNXMgbG9vcDogcHJvY2VzcyBkZWFkIC0+IHJlbGF1bmNoLiBoYWxmLW9wZW4vZnJvemVuIC0+IGZvcmNlIGtpbGwrcmVsYXVuY2guCiMgaGVhcnRiZWF0IGZpbGUgZm9yIGxpdmVuZXNzLiAzIGZhaWxlZCByZWxhdW5jaGVzIC0+IGZyZWV6ZSAzMG1pbiAocGVyIGVudikuCklOVEVSVkFMPTE1ClNUQVRFX0RJUj0vcm9vdC8uZGV2ZW52Ly5jYWNoZQpDTEk9L3Jvb3QvLmxvY2FsL2Jpbi9oZHNwYWNlClNFVFVQPS9yb290Ly5sb2NhbC9iaW4vaGRzLWVudi1zZXR1cC5zaApEQlVTPXVuaXg6cGF0aD0vdG1wL2hkcy1kYnVzLnNvY2sKTE9HPS90bXAvaGRzLXN1cGVydmlzb3IubG9nCkNPT0xET1dOX01TPTE4MDAwMDAKQUdFX0dVQVJEX1M9MTIKSEJFQVQ9L3RtcC9oZHMtc3VwZXJ2aXNvci5oZWFydGJlYXQKCmlmIFsgLWYgL3RtcC9oZHMtc3VwZXJ2aXNvci5sb2NrIF07IHRoZW4KICBPTEQ9JChjYXQgL3RtcC9oZHMtc3VwZXJ2aXNvci5sb2NrKQogIGlmIGtpbGwgLTAgIiRPTEQiIDI+L2Rldi9udWxsOyB0aGVuIGV4aXQgMDsgZmkKZmkKZWNobyAkJCA+IC90bXAvaGRzLXN1cGVydmlzb3IubG9jawoKbG9nKCkgeyBlY2hvICJbc3VwICQoZGF0ZSArJW0tJWRfJUg6JU06JVMpXSAkKiIgPj4gIiRMT0ciOyB9CmxvZyAidjQgc3RhcnRlZCBwaWQ9JCQiCgpjb29sZG93bl9hY3RpdmUoKSB7CiAgbG9jYWwgRj0iJFNUQVRFX0RJUi9oZHMtZmFpbC0kMSIgaGl0cyB0cyBhZ2UKICBbIC1mICIkRiIgXSB8fCByZXR1cm4gMQogIElGUz06IHJlYWQgLXIgaGl0cyB0cyA8PDwgIiQoY2F0ICIkRiIgMj4vZGV2L251bGwpIgogIGFnZT0kKCggJChkYXRlICslcyUzTikgLSAke3RzOi0wfSApKQogIFsgIiRhZ2UiIC1sdCAiJENPT0xET1dOX01TIiBdICYmIFsgIiR7aGl0czotMH0iIC1nZSAzIF0KfQoKYnVtcF9mYWlsKCkgewogIGxvY2FsIEY9IiRTVEFURV9ESVIvaGRzLWZhaWwtJDEiIGhpdHMgdHMgbm93CiAgbm93PSQoZGF0ZSArJXMlM04pCiAgaWYgWyAtZiAiJEYiIF07IHRoZW4gSUZTPTogcmVhZCAtciBoaXRzIHRzIDw8PCAiJChjYXQgIiRGIikiOyBlbHNlIGhpdHM9MDsgZmkKICBlY2hvICIkKChoaXRzKzEpKTokbm93IiA+ICIkRiIKfQoKY2xlYXJfZmFpbCgpIHsgcm0gLWYgIiRTVEFURV9ESVIvaGRzLWZhaWwtJDEiOyB9Cgpwcm9jX2FnZV9zKCkgewogIGxvY2FsIHBpZAogIHBpZD0kKHBncmVwIC1mICJzdGFydC10dW5uZWwuKi0taW5zdGFuY2UtaWQ9JDEiIHwgaGVhZCAtMSkKICBbIC1uICIkcGlkIiBdICYmIHBzIC1vIGV0aW1lcz0gLXAgIiRwaWQiIDI+L2Rldi9udWxsIHwgdHIgLWRjICcwLTknCn0KCnByb2Nfc3RhdCgpIHsKICBsb2NhbCBwaWQKICBwaWQ9JChwZ3JlcCAtZiAic3RhcnQtdHVubmVsLiotLWluc3RhbmNlLWlkPSQxIiB8IGhlYWQgLTEpCiAgWyAtbiAiJHBpZCIgXSAmJiBwcyAtbyBzdGF0PSAtcCAiJHBpZCIgMj4vZGV2L251bGwgfCB0ciAtZCAnICcKfQoKZm9yY2Vfa2lsbF90dW5uZWwoKSB7CiAgcGtpbGwgLWYgInN0YXJ0LXR1bm5lbC4qLS1pbnN0YW5jZS1pZD0kMSIgMj4vZGV2L251bGwKICBzbGVlcCAxCiAgcGdyZXAgLWYgInN0YXJ0LXR1bm5lbC4qLS1pbnN0YW5jZS1pZD0kMSIgPi9kZXYvbnVsbCAyPiYxICYmIHBraWxsIC05IC1mICJzdGFydC10dW5uZWwuKi0taW5zdGFuY2UtaWQ9JDEiIDI+L2Rldi9udWxsCiAgc2xlZXAgMQp9CgpyZXZpdmUoKSB7CiAgbG9jYWwgSUQ9JDEgUE9SVD0kMiBiYW5uZXIgYWdlIHN0CiAgY29vbGRvd25fYWN0aXZlICIkSUQiICYmIHJldHVybgogIGlmIHBncmVwIC1mICJzdGFydC10dW5uZWwuKi0taW5zdGFuY2UtaWQ9JElEIiA+L2Rldi9udWxsIDI+JjE7IHRoZW4KICAgIGFnZT0kKHByb2NfYWdlX3MgIiRJRCIpCiAgICBpZiBbIC1uICIkYWdlIiBdICYmIFsgIiRhZ2UiIC1sdCAiJEFHRV9HVUFSRF9TIiBdOyB0aGVuCiAgICAgIHJldHVybgogICAgZmkKICAgIHN0PSQocHJvY19zdGF0ICIkSUQiKQogICAgaWYgWyAtbiAiJHN0IiBdICYmIFsgIiR7c3QjKlR9IiAhPSAiJHN0IiBdOyB0aGVuCiAgICAgIGxvZyAiZnJvemVuIHByb2Nlc3MgJElEIChzdGF0PSRzdCkgLT4gZm9yY2Uga2lsbCIKICAgICAgZm9yY2Vfa2lsbF90dW5uZWwgIiRJRCIKICAgIGVsc2UKICAgICAgYmFubmVyPSQodGltZW91dCA2IGJhc2ggLWMgImV4ZWMgMzw+L2Rldi90Y3AvMTI3LjAuMC4xLyRQT1JUIDI+L2Rldi9udWxsOyBoZWFkIC1jIDE2IDwmMyAyPi9kZXYvbnVsbCIgMj4vZGV2L251bGwpCiAgICAgIGNhc2UgIiRiYW5uZXIiIGluCiAgICAgICAgU1NILSopIHJldHVybiA7OwogICAgICBlc2FjCiAgICAgIGxvZyAiaGFsZi1vcGVuICRJRDokUE9SVCAtPiByZXN0YXJ0IgogICAgICBmb3JjZV9raWxsX3R1bm5lbCAiJElEIgogICAgZmkKICBlbHNlCiAgICBsb2cgInByb2Nlc3MgZGVhZCAkSUQgLT4gcmVsYXVuY2giCiAgZmkKICBEQlVTX1NFU1NJT05fQlVTX0FERFJFU1M9JERCVVMgYmFzaCAiJFNFVFVQIiA+L2Rldi9udWxsIDI+JjEKICBEQlVTX1NFU1NJT05fQlVTX0FERFJFU1M9JERCVVMgc2V0c2lkIG5vaHVwICIkQ0xJIiBkZXZlbnYgc3RhcnQtdHVubmVsIC0taW5zdGFuY2UtaWQ9IiRJRCIgLS1wb3J0cz0iJFBPUlQ6MjIiID4vdG1wL2hkcy10dW5uZWwtIiRJRCIubG9nIDI+JjEgPC9kZXYvbnVsbCAmCiAgc2xlZXAgMwogIGlmIHBncmVwIC1mICJzdGFydC10dW5uZWwuKi0taW5zdGFuY2UtaWQ9JElEIiA+L2Rldi9udWxsIDI+JjE7IHRoZW4KICAgIGNsZWFyX2ZhaWwgIiRJRCIKICBlbHNlCiAgICBidW1wX2ZhaWwgIiRJRCIKICAgIGxvZyAibGF1bmNoIGZhaWxlZCAkSUQgKGZhaWwgY291bnRlciBidW1wZWQpIgogIGZpCn0KCndoaWxlIHRydWU7IGRvCiAgZGF0ZSArJXMgPiAiJEhCRUFUIgogIGZvciBmIGluICIkU1RBVEVfRElSIi9oZHMta2VlcC0qOyBkbwogICAgWyAtZSAiJGYiIF0gfHwgY29udGludWUKICAgIElEPSR7ZiMjKi9oZHMta2VlcC19CiAgICBQT1JUPSQoY2F0ICIkU1RBVEVfRElSL2hkcy1wb3J0LSRJRCIgMj4vZGV2L251bGwgfCB0ciAtZGMgJzAtOScpCiAgICBbIC1uICIkUE9SVCIgXSB8fCBjb250aW51ZQogICAgcmV2aXZlICIkSUQiICIkUE9SVCIKICBkb25lCiAgc2xlZXAgIiRJTlRFUlZBTCIKZG9uZQo=";
+/** 部署并启动常驻隧道守护（幂等：已部署已运行则跳过）。connect/keepalive 时调用。 */
+export async function ensureSupervisor() {
+    const script = "/root/.local/bin/hds-supervisor.sh";
+    // 每次同步脚本版本：跑着的守护发现文件变了会自己重启，这里主动重启一次确保新版落地
+    const cmd = `echo '${SUPERVISOR_B64}' | base64 -d > ${script}; chmod +x ${script}; ` +
+        `if md5sum -c /tmp/hds-supervisor.md5 >/dev/null 2>&1; then ` +
+        `  pgrep -f 'hds-supervisor[.]sh' >/dev/null 2>&1 || (setsid nohup ${script} >/dev/null 2>&1 </dev/null & sleep 0.5); ` +
+        `else ` +
+        `  pkill -f 'hds-supervisor[.]sh' 2>/dev/null; sleep 0.5; rm -f /tmp/hds-supervisor.lock; ` +
+        `  setsid nohup ${script} >/dev/null 2>&1 </dev/null & sleep 0.5; ` +
+        `  md5sum ${script} > /tmp/hds-supervisor.md5; ` +
+        `fi; ` +
+        `pgrep -f 'hds-supervisor[.]sh' >/dev/null 2>&1 && echo SUP_OK || echo SUP_ERR`;
+    const r = await runShell(cmd, 20000, "tunnel-mgr");
+    return r.output.indexOf("SUP_OK") >= 0;
 }
