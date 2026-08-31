@@ -46,7 +46,9 @@ METADATA
             "description": {"zh": "在当前连接的环境执行命令，隧道断了自动重建重试。"},
             "parameters": [
                 {"name": "command", "description": {"zh": "命令"}, "type": "string", "required": true},
-                {"name": "timeout_ms", "description": {"zh": "超时毫秒，默认30000"}, "type": "number", "required": false}
+                {"name": "timeout_ms", "description": {"zh": "超时毫秒，默认30000"}, "type": "number", "required": false},
+                {"name": "id", "description": {"zh": "实例ID，缺省用当前连接"}, "type": "string", "required": false},
+                {"name": "num", "description": {"zh": "环境序号"}, "type": "number", "required": false}
             ],
             "returns": true
         },
@@ -56,7 +58,8 @@ METADATA
             "parameters": [
                 {"name": "command", "description": {"zh": "命令"}, "type": "string", "required": true},
                 {"name": "id", "description": {"zh": "实例ID，缺省用当前"}, "type": "string", "required": false},
-                {"name": "num", "description": {"zh": "环境序号"}, "type": "number", "required": false}
+                {"name": "num", "description": {"zh": "环境序号"}, "type": "number", "required": false},
+                {"name": "timeout_ms", "description": {"zh": "超时毫秒，默认60000"}, "type": "number", "required": false}
             ],
             "returns": true
         },
@@ -445,6 +448,7 @@ async function huaweiDevQuick(params) {
     const command = asText(params?.command).trim();
     if (!command)
         throw new Error("command cannot be empty");
+    const timeoutMs = params?.timeout_ms != null ? Number(params.timeout_ms) : 60000;
     // 复用 connect 的完整流程（含自动开机/建隧道/探测用户）
     const connectResult = await huaweiDevConnect(params);
     if (!connectResult.success) {
@@ -464,27 +468,73 @@ async function huaweiDevQuick(params) {
         parts.push(`'${escaped}'`);
         return parts.join(" ");
     };
-    let r = await runShell(await buildCmd(), 60000, "ssh-exec");
-    if (r.exitCode !== 0 && r.output.indexOf("REMOTE HOST IDENTIFICATION HAS CHANGED") >= 0) {
-        await healKnownHosts(env.id, port);
-        r = await runShell(await buildCmd(), 60000, "ssh-exec");
+    let r = await runShell(await buildCmd(), Math.max(timeoutMs + 10000, 20000), "ssh-exec");
+    let success = r.exitCode === 0 && !r.timedOut;
+    // 隧道自愈：半开/端口死/进程崩溃 → 立即重建并重试
+    const tunnelDead = !success
+        && (r.output.indexOf("Connection refused") >= 0
+            || r.output.indexOf("Connection timed out") >= 0
+            || r.output.indexOf("kex_exchange_identification") >= 0);
+    if (tunnelDead) {
+        const t = await startTunnelWithRetry(env.id, port);
+        if (t.ok) {
+            r = await runShell(await buildCmd(), Math.max(timeoutMs + 10000, 20000), "ssh-exec");
+            success = r.exitCode === 0 && !r.timedOut;
+            if (success)
+                await markLastOk(env.id);
+        }
     }
-    const success = r.exitCode === 0 && !r.timedOut;
-    if (success)
+    if (!success && tunnelDead) {
+        await new Promise(res => setTimeout(res, 3000));
+        const t2 = await startTunnelWithRetry(env.id, port);
+        if (t2.ok) {
+            r = await runShell(await buildCmd(), Math.max(timeoutMs + 10000, 20000), "ssh-exec");
+            success = r.exitCode === 0 && !r.timedOut;
+            if (success)
+                await markLastOk(env.id);
+        }
+    }
+    // 指纹变化 / 权限失配自愈
+    if (!success) {
+        if (r.output.indexOf("REMOTE HOST IDENTIFICATION HAS CHANGED") >= 0) {
+            await healKnownHosts(env.id, port);
+            r = await runShell(await buildCmd(), Math.max(timeoutMs + 10000, 20000), "ssh-exec");
+            success = r.exitCode === 0 && !r.timedOut;
+        } else if (r.output.indexOf("Permission denied") >= 0) {
+            const reprobe = await probeUser(env);
+            if (reprobe.user && reprobe.user !== user) {
+                user = reprobe.user;
+                r = await runShell(await buildCmd(), Math.max(timeoutMs + 10000, 20000), "ssh-exec");
+                success = r.exitCode === 0 && !r.timedOut;
+            }
+        }
+    }
+    // SSH 通信或隧道层错误判断（非命令自身 exitCode）
+    const sshError = !r.timedOut && (
+        r.output.indexOf("Connection refused") >= 0 ||
+        r.output.indexOf("Connection timed out") >= 0 ||
+        r.output.indexOf("kex_exchange_identification") >= 0 ||
+        r.output.indexOf("Permission denied (publickey") >= 0 ||
+        r.output.indexOf("Host key verification failed") >= 0
+    );
+    success = !r.timedOut && !sshError;
+    if (success && r.exitCode === 0)
         await markLastOk(env.id);
     return await persistToolResult("quick", output(params, {
         success,
+        commandOk: r.exitCode === 0,
         env: `${env.name} #${env.num}`,
         output: r.output.slice(0, 2000),
         exitCode: r.exitCode,
-        failReason: success ? "" : "命令失败，verbose=true 看详情"
+        failReason: success ? (r.exitCode === 0 ? "" : `命令返回非零退出码 (exit=${r.exitCode})`) : buildExecFailReason(r, false)
     }, {
         success,
+        commandOk: r.exitCode === 0,
         user,
         exitCode: r.exitCode,
         timedOut: r.timedOut,
         output: r.output,
-        failReason: success ? "" : buildExecFailReason(r, success),
+        failReason: success ? (r.exitCode === 0 ? "" : `命令返回非零退出码 (exit=${r.exitCode})`) : buildExecFailReason(r, false),
         connectSteps: connectResult.steps
     }));
 }
@@ -1143,7 +1193,7 @@ async function huaweiDevExec(params) {
     if (!command)
         throw new Error("command cannot be empty");
     const timeoutMs = params?.timeout_ms != null ? Number(params.timeout_ms) : 30000;
-    const env = await resolveTarget({});
+    const env = await resolveTarget(params || {});
     if (!(await isTunnelAliveFor(env.id))) {
         throw new Error(`tunnel not running for ${env.name} #${env.num}; call huawei_dev_connect first`);
     }
@@ -1202,19 +1252,33 @@ async function huaweiDevExec(params) {
             }
         }
     }
+    // SSH 通信或隧道层错误判断（非命令自身 exitCode）
+    const sshError = !r.timedOut && (
+        r.output.indexOf("Connection refused") >= 0 ||
+        r.output.indexOf("Connection timed out") >= 0 ||
+        r.output.indexOf("kex_exchange_identification") >= 0 ||
+        r.output.indexOf("Permission denied (publickey") >= 0 ||
+        r.output.indexOf("Host key verification failed") >= 0
+    );
+    success = !r.timedOut && !sshError;
+    if (success && r.exitCode === 0)
+        await markLastOk(env.id);
     return await persistToolResult("exec_output", output(params, {
         success,
+        commandOk: r.exitCode === 0,
         user,
         output: r.output.slice(0, 2000),
-        exitCode: r.exitCode
+        exitCode: r.exitCode,
+        failReason: success ? (r.exitCode === 0 ? "" : `命令返回非零退出码 (exit=${r.exitCode})`) : buildExecFailReason(r, false)
     }, {
         success,
+        commandOk: r.exitCode === 0,
         user,
         exitCode: r.exitCode,
         timedOut: r.timedOut,
         output: r.output,
-        error: success ? "" : `exit=${r.exitCode}`,
-        failReason: success ? "" : buildExecFailReason(r, success)
+        error: success ? (r.exitCode === 0 ? "" : `exit=${r.exitCode}`) : buildExecFailReason(r, false),
+        failReason: success ? (r.exitCode === 0 ? "" : `命令返回非零退出码 (exit=${r.exitCode})`) : buildExecFailReason(r, false)
     }));
 }
 /** exec 失败原因归类 */
