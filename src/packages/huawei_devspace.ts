@@ -146,7 +146,7 @@ METADATA
 }
 */
 Object.defineProperty(exports, "__esModule", { value: true });
-const PACKAGE_VERSION = "0.2.4";
+const PACKAGE_VERSION = "0.2.5";
 async function ensureCli() {
     const check = await runShell(`test -x ${CLI_PATH} && echo CLI_OK || echo CLI_MISSING`, 8000);
     if (check.output.indexOf("CLI_OK") >= 0)
