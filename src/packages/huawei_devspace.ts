@@ -181,8 +181,20 @@ import { persistToolResult, output, buildExecFailReason } from "./core/result";
 
 async function hds(args, timeoutMs) {
     await ensureCli();
-    const combined = `DBUS_SESSION_BUS_ADDRESS=${DBUS_ADDRESS} bash ${ENV_SETUP_SCRIPT} >/dev/null 2>&1; DBUS_SESSION_BUS_ADDRESS=${DBUS_ADDRESS} ${CLI_PATH} ${args}`;
-    return await runShell(combined, timeoutMs, "hds-cli");
+    const buildCombined = () => `DBUS_SESSION_BUS_ADDRESS=${DBUS_ADDRESS} bash ${ENV_SETUP_SCRIPT} >/dev/null 2>&1; DBUS_SESSION_BUS_ADDRESS=${DBUS_ADDRESS} ${CLI_PATH} ${args}`;
+    let r = await runShell(buildCombined(), timeoutMs || 30000, "hds-cli");
+    const keyringBroken = r.exitCode !== 0 && (
+        r.output.indexOf("keyring backend not available") >= 0 ||
+        r.output.indexOf("failed to get system credentials") >= 0 ||
+        r.output.indexOf("connection is closed") >= 0 ||
+        r.output.indexOf("Cannot autolaunch D-Bus") >= 0
+    );
+    if (keyringBroken) {
+        // 显式执行一次带强杀的自愈重建，然后重试一次
+        await runShell(`pkill -9 -f 'dbus-daemon.*hds-dbus'; pkill -9 -f 'gnome-keyring-daemon'; rm -f /tmp/hds-dbus.sock; bash ${ENV_SETUP_SCRIPT}`, 15000, "hds-cli");
+        r = await runShell(buildCombined(), timeoutMs || 30000, "hds-cli");
+    }
+    return r;
 }
 /** 解析 devenv list 表格输出 */
 function parseEnvList(tableText) {
