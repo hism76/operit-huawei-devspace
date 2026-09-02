@@ -69,7 +69,7 @@ or use the debug-install tool inside Operit.
 | "看看当前连接状态" | `huawei_dev_status` |
 | "把 2 号环境开机" | `huawei_dev_power` (`action=start`, `num=2`) |
 | "关掉当前环境" | `huawei_dev_power` (`action=stop`) |
-| "在云环境里执行 df -h" | `huawei_dev_exec` |
+| "在云环境里执行 df -h" | `huawei_dev_exec` (current env) / `huawei_dev_quick` (one-step auto-connect & run) |
 | "上传 xxx 到云环境 /tmp/" | `huawei_dev_upload` |
 | "下载云环境的 ~/a.log" | `huawei_dev_download` |
 | "隧道又掉了？看看日志" | `huawei_dev_logs` |

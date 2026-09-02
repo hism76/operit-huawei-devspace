@@ -81,7 +81,7 @@ bash /sdcard/Download/Operit/dev_package/huawei_devspace/assets/hds-env-setup.sh
 | “看看当前连接状态” | `huawei_dev_status` |
 | “把 2 号环境开机” | `huawei_dev_power`（`action=start`, `num=2`） |
 | “关掉当前环境” | `huawei_dev_power`（`action=stop`） |
-| “在云环境里执行 df -h” | `huawei_dev_exec` |
+| “在云环境里执行 df -h” | `huawei_dev_exec`（当前环境）/ `huawei_dev_quick`（一步到位自动连接并执行） |
 | “上传 xxx 到云环境 /tmp/” | `huawei_dev_upload` |
 | “下载云环境的 ~/a.log” | `huawei_dev_download` |
 | “隧道又掉了？看看日志” | `huawei_dev_logs` |

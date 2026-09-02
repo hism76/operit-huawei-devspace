@@ -436,7 +436,7 @@ export default function Screen(ctx: ComposeDslContext): ComposeNode {
                         ctx.UI.Column({ weight: 1, spacing: 0 }, [
                             ctx.UI.Row({ verticalAlignment: "center", spacing: 6 }, [
                                 ctx.UI.Text({ text: "华为云开发空间", style: "titleMedium", fontWeight: "bold" }),
-                                ctx.UI.Text({ text: "v0.2.5", style: "labelSmall", color: "onSurfaceVariant" })
+                                ctx.UI.Text({ text: "v0.2.6", style: "labelSmall", color: "onSurfaceVariant" })
                             ]),
                             ctx.UI.Text(
                                 {
