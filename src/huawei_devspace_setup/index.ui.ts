@@ -137,8 +137,8 @@ export default function Screen(ctx: ComposeDslContext): ComposeNode {
         };
     };
 
-    const refreshStatus = async (): Promise<void> => {
-        const result = parseRecord(await callPackageTool("huawei_dev_status", {}));
+    const refreshStatus = async (force?: boolean): Promise<void> => {
+        const result = parseRecord(await callPackageTool("huawei_dev_status", { refresh: force !== false }));
         const conns: ConnInfo[] = Array.isArray(result.connections)
             ? (result.connections as any[]).map((c: any) => ({
                 envId: asText(c.envId),
@@ -197,7 +197,8 @@ export default function Screen(ctx: ComposeDslContext): ComposeNode {
     });
 
     const disconnectAction = runAction("断开当前", async () => {
-        await callPackageTool("huawei_dev_disconnect", { stop_env: false, id: selectedId || undefined });
+        const targetDisconnectId = selectedId || currentTargetId || undefined;
+        await callPackageTool("huawei_dev_disconnect", { stop_env: false, id: targetDisconnectId });
         await refreshAllSilent();
         ctx.showToast("已断开，环境保持运行");
     });
@@ -498,7 +499,7 @@ export default function Screen(ctx: ComposeDslContext): ComposeNode {
                 ctx.UI.FilledTonalButton(
                     {
                         weight: 1,
-                        enabled: !busy && hasSelection,
+                        enabled: !busy && (hasSelection || connected),
                         onClick: disconnectAction,
                         shape: { cornerRadius: 12 }
                     },

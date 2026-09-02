@@ -1044,12 +1044,18 @@ async function huaweiDevDisconnect(params) {
     steps.push(killed ? `tunnel killed${targetId ? ` (${targetId.slice(0, 8)})` : ""}` : "tunnel already dead");
     if (targetId) {
         await unmarkAutoKeep(targetId);
+        const cur = await readState("hds-current-env");
+        if (cur === targetId) {
+            const alive = (await getAliveTunnelIds()).filter(id => id !== targetId);
+            await writeState("hds-current-env", alive[0] || "");
+        }
     }
     else {
-        // 全断语义：清空所有保活登记，否则 keepalive 会立即复活刚断开的隧道
+        // 全断语义：清空所有保活登记与当前环境记录
         const allKeep = await listAutoKeepEnvs();
         for (const kid of allKeep)
             await unmarkAutoKeep(kid);
+        await writeState("hds-current-env", "");
         await runShell(`rm -f ${STATE_DIR}/hds-fail-* 2>/dev/null; true`, 5000, "state-mgr");
         steps.push(`keepalive markers cleared (${allKeep.length} envs unregistered from auto-keep)`);
     }
@@ -1072,6 +1078,7 @@ async function huaweiDevDisconnect(params) {
     else {
         steps.push("keep env running (stop_env=false)");
     }
+    invalidateStatusCache();
     return await persistToolResult("disconnect", {
         success: killed,
         stoppedEnv: stopEnv,
